@@ -1,0 +1,18 @@
+# A deck whose cards live somewhere else - here, two banks in a notes vault,
+# drilled as one pool. The config sits in the decks directory; the cards stay
+# where they are written.
+#
+# Order matters only for a clash: if two banks hold a card of the same name,
+# the first one named wins and `lernt-deck general --check` reports it.
+#
+# The directory name, "general", is the deck's id and names its log, so this
+# pool's history is separate from the histories of either bank on its own.
+
+[deck]
+name  = "General software"
+description = "Technical and web screen questions, pooled from two banks."
+cards = [
+  "~/Obsidian Vaults/Dev-Notes/Career/Technical Screens/Questions",
+  "~/Obsidian Vaults/Dev-Notes/Career/Web Screens/Questions",
+]
+count = 15

@@ -1,0 +1,9 @@
+# A portable deck: the cards sit beside this file, so `cards` is left out.
+# Copy or link the directory into ~/.local/share/lernt/decks/ to run it by name,
+# or run it where it is: lernt examples/decks/capitals
+
+[deck]
+name  = "European capitals"
+description = "The capital cities of European countries."
+count = 3
+limit = 10
