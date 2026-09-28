@@ -1,0 +1,36 @@
+[project]
+name = "lernt"
+version = "2.0.0"
+description = "Drill decks of Markdown flash cards: a question, a timed answer, the card's answer, a score, and a branch into the next card."
+readme = "README.md"
+requires-python = ">=3.11"  # tomllib
+
+[project.scripts]
+lernt = "lernt.cli:main"
+lernt-deck = "lernt.deck:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lernt*"]
+
+# The TUI binary, built from tui/ by `make`, ships inside the package.
+[tool.setuptools.package-data]
+lernt = ["_bin/*"]
+
+# Style is not argued here: see the vault's Python Code Style note. This block
+# is that note's general.ruff.toml, with the per-project ignores it cannot know.
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RET", "C4", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest's whole idiom is the bare assert, and a test's paths come from
+# tmp_path, which is already a Path.
+# E501: the fixtures are Markdown card text, and wrapping a card's follow-up
+# link would change what is being parsed - the line length IS the fixture.
+"tests/*" = ["S101", "PTH", "E501"]
