@@ -171,18 +171,16 @@ make install      # builds tui/ into lernt/_bin, then uv tool install --editable
 The install builds a venv of its own under `~/.local/share/uv/tools/lernt/` and puts
 `lernt` and `lernt-deck` in `~/.local/bin`. `--editable` pins it to this
 checkout, so edits are live - but moving the directory breaks the commands;
-uninstall and reinstall from the new path. `uv tool uninstall lernt` removes
-both.
+uninstall and reinstall from the new path.
 
 Or run it in place: `make tui && PYTHONPATH=~/Projects/lernt python3 -m lernt`.
 `make test` runs both test suites.
 
-The man page and zsh completion are installed by hand:
-
-```sh
-install -Dm644 lernt.1 ~/.local/share/man/man1/lernt.1
-install -Dm644 completions/_lernt ~/.local/share/zsh/site-functions/_lernt
-```
+`make install` also installs the man page and the zsh completion, under
+`$XDG_DATA_HOME` (`~/.local/share`). `make uninstall` removes the commands, the
+man page and the completion. It leaves your decks and your history in
+`~/.local/state/lernt/` alone; delete that directory yourself if you want the
+history gone.
 
 The completion directory must be on `fpath` before `compinit` runs:
 `fpath=(~/.local/share/zsh/site-functions $fpath)`, then

@@ -21,7 +21,7 @@ completions/
   _lernt      zsh completion for lernt and lernt-deck
 tui/          the TUI: a Go module (bubbletea), built into lernt/_bin/lernt-tui
   engine/     the TUI's only door into lernt: a JSON-RPC client for the API, and its types
-Makefile      builds the TUI, installs both, runs both test suites
+Makefile      builds the TUI; install and uninstall; runs both test suites
 ```
 
 A flag lives in three places: the parser (`build_parser` in `cli.py` or
