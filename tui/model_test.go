@@ -815,3 +815,83 @@ func TestOneSourceIsALineAndAFewAreAListWithNothingHidden(t *testing.T) {
 	lacks(t, m, "more")
 	lacks(t, m, "c sources")
 }
+
+func TestTheSettingsScreenChangesTheModeAndGoesBackToTheSameDeck(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m = press(m, "down", "s")
+	sees(t, m, "Settings", "Mode", "Cards", "Seconds", "every deck")
+	if m.screen != settingsScreen {
+		t.Fatalf("on screen %d", m.screen)
+	}
+
+	m = press(m, "right")
+	if m.mode != leitner || f.settings["mode"] != leitner {
+		t.Fatalf("mode %q, settings %v", m.mode, f.settings)
+	}
+	m = press(m, "right")
+	if m.mode != leitner {
+		t.Fatal("turning right on the last value changed it")
+	}
+	m = press(m, "space")
+	if m.mode != classic || f.settings["mode"] != classic {
+		t.Fatalf("space did not flip it: %q, %v", m.mode, f.settings)
+	}
+
+	m = press(m, "esc")
+	if m.screen != decksScreen || m.cursor != 1 {
+		t.Fatalf("back on screen %d, cursor %d", m.screen, m.cursor)
+	}
+}
+
+func TestTheSettingsAreTheDefaultsOfADeckWithNoneOfItsOwn(t *testing.T) {
+	f := newFake()
+	f.decks.Decks = append(f.decks.Decks, engine.DeckInfo{ID: "plain", Name: "Plain"})
+	m, _ := start(t, f)
+	m = press(m, "s", "down", "right", "right", "down", "right", "right")
+	if f.settings["count"] != "15" || f.settings["limit"] != "5" {
+		t.Fatalf("settings %v", f.settings)
+	}
+	m = press(m, "esc", "down", "down", "enter")
+	sees(t, m, "Plain")
+	if got := m.opts.wheels[countField].value(); got != 15 {
+		t.Fatalf("the count started at %d, not the setting", got)
+	}
+	if got := m.opts.wheels[limitField].value(); got != 5 {
+		t.Fatalf("the seconds started at %d, not the setting", got)
+	}
+
+	// A deck that names its own count keeps it, and one that names a limit runs
+	// on it: the setting is only for what a deck leaves out.
+	m = press(m, "esc", "up", "up", "enter")
+	if got := m.opts.wheels[countField].value(); got != 2 {
+		t.Fatalf("the deck's count was %d", got)
+	}
+	if got := m.opts.wheels[limitField].value(); got != autoLimit {
+		t.Fatalf("the deck's limit was overridden: %d", got)
+	}
+}
+
+func TestSavedSettingsComeBack(t *testing.T) {
+	f := newFake()
+	f.settings = map[string]string{"mode": leitner, "count": "25", "limit": "auto"}
+	m, _ := start(t, f)
+	if m.mode != leitner || m.prefs.count.value() != 25 || m.prefs.limit.value() != autoLimit {
+		t.Fatalf("mode %q, count %d, limit %d", m.mode, m.prefs.count.value(), m.prefs.limit.value())
+	}
+	f.settings = map[string]string{"count": "many", "limit": "-3"}
+	m, _ = start(t, f)
+	if m.prefs.count.value() != 10 || m.prefs.limit.value() != autoLimit {
+		t.Fatalf("unreadable values were not passed over: %d, %d", m.prefs.count.value(), m.prefs.limit.value())
+	}
+}
+
+func TestTheSettingsScreenIsThereWithNoDecks(t *testing.T) {
+	f := newFake()
+	f.decks.Decks = nil
+	m, _ := start(t, f)
+	m = press(m, "s")
+	sees(t, m, "Settings")
+	m = press(m, "esc")
+	sees(t, m, "No decks in")
+}

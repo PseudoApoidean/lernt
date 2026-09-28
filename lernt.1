@@ -471,7 +471,16 @@ What the TUI's options screen was last set to for the deck: a JSON object of
 option names to values. Delete it to go back to the deck's defaults.
 .TP
 .I ~/.local/state/lernt/settings.json
-The TUI's settings for lernt as a whole, such as the run mode, in the same form.
+The TUI's settings for lernt as a whole, in the same form: \fBmode\fR
+(\fBclassic\fR or \fBleitner\fR), and \fBcount\fR and \fBlimit\fR, the card
+count and the seconds per answer that a deck starts from when its
+.B deck.toml
+sets none. They are changed on the TUI's settings screen, opened with
+.B s
+on the deck list, and read and written through the API as
+.B settings.load
+and
+.BR settings.save .
 .SH ENVIRONMENT
 .TP
 .B LERNT_DECKS

@@ -48,6 +48,7 @@ const (
 	boxesScreen
 	editsScreen
 	sourcesScreen
+	settingsScreen
 )
 
 // The run options, in the order the options screen lists them. The mode is not
@@ -139,18 +140,101 @@ type options struct {
 	filter string
 }
 
-func defaultOptions(deck engine.DeckInfo) options {
-	count := 10
-	if deck.Count != nil {
-		count = *deck.Count
+// The settings screen's rows. The mode is the app's own; the count and the
+// seconds are what a deck starts from when it says nothing of its own.
+const (
+	modeRow = iota
+	countPref
+	limitPref
+	prefRows
+)
+
+// prefs are the defaults the settings screen holds for the options screen.
+type prefs struct {
+	count wheel
+	limit wheel
+}
+
+func defaultPrefs() prefs {
+	return prefs{count: countWheel(10), limit: limitWheel()}
+}
+
+// The keys the settings screen is saved under, the same names and values the
+// options screen saves, so a setting reads like an option.
+var prefKeys = [prefRows]string{modeRow: modeKey, countPref: "count", limitPref: "limit"}
+
+func (p prefs) saved(mode string) []engine.Option {
+	return []engine.Option{
+		{Key: prefKeys[modeRow], Value: mode},
+		{Key: prefKeys[countPref], Value: countText(p.count.value())},
+		{Key: prefKeys[limitPref], Value: limitText(p.limit.value())},
 	}
+}
+
+// restore sets each default from what was saved, by key, passing over a key or
+// a value it does not know as options.restore does.
+func (p *prefs) restore(saved []engine.Option) {
+	for _, s := range saved {
+		switch s.Key {
+		case prefKeys[countPref]:
+			p.count.setCount(s.Value)
+		case prefKeys[limitPref]:
+			p.limit.setLimit(s.Value)
+		}
+	}
+}
+
+// defaultOptions is the options screen for a deck never run from it: the deck's
+// own count if it has one, else the saved default. A deck's own limit is the
+// engine's to apply, as "auto", so only a deck without one takes the default.
+func defaultOptions(deck engine.DeckInfo, p prefs) options {
 	o := options{deck: deck}
-	o.wheels[countField] = countWheel(count)
+	o.wheels[countField] = p.count
+	if deck.Count != nil {
+		o.wheels[countField].set(*deck.Count, countLabel(*deck.Count))
+	}
 	o.wheels[limitField] = limitWheel()
+	if deck.Limit == nil {
+		o.wheels[limitField] = p.limit
+	}
 	for field := autoField; field < filterField; field++ {
 		o.wheels[field] = toggle()
 	}
 	return o
+}
+
+// countText and limitText are a wheel's value as it is saved.
+func countText(v int) string { return strconv.Itoa(v) }
+
+func limitText(v int) string {
+	switch v {
+	case autoLimit:
+		return "auto"
+	case 0:
+		return "off"
+	}
+	return strconv.Itoa(v)
+}
+
+// setCount and setLimit turn a wheel to a saved value; one it cannot read leaves
+// the wheel where it was.
+func (w *wheel) setCount(value string) {
+	if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && n >= 0 {
+		w.set(n, countLabel(n))
+	}
+}
+
+func (w *wheel) setLimit(value string) {
+	switch value = strings.TrimSpace(value); value {
+	case "auto":
+		w.set(autoLimit, limitLabel(autoLimit))
+	case "off":
+		w.set(0, limitLabel(0))
+	default:
+		if n, err := strconv.Atoi(value); err == nil && n > 0 {
+			w.set(n, limitLabel(n))
+		}
+	}
 }
 
 func (o options) on(field int) bool { return o.wheels[field].value() == 1 }
@@ -192,12 +276,9 @@ func (o options) saved() []engine.Option {
 		var value string
 		switch field {
 		case countField:
-			value = strconv.Itoa(v)
+			value = countText(v)
 		case limitField:
-			value = map[int]string{autoLimit: "auto", 0: "off"}[v]
-			if value == "" {
-				value = strconv.Itoa(v)
-			}
+			value = limitText(v)
 		default:
 			value = map[bool]string{true: "on", false: "off"}[v == 1]
 		}
@@ -221,17 +302,9 @@ func (o *options) restore(saved []engine.Option) {
 		case filterField:
 			o.filter = option.Value
 		case countField:
-			if n, err := strconv.Atoi(value); err == nil && n >= 0 {
-				o.wheels[field].set(n, countLabel(n))
-			}
+			o.wheels[field].setCount(value)
 		case limitField:
-			if value == "auto" {
-				o.wheels[field].set(autoLimit, limitLabel(autoLimit))
-			} else if value == "off" {
-				o.wheels[field].set(0, limitLabel(0))
-			} else if n, err := strconv.Atoi(value); err == nil && n > 0 {
-				o.wheels[field].set(n, limitLabel(n))
-			}
+			o.wheels[field].setLimit(value)
 		default:
 			switch value {
 			case "on", "true":
@@ -286,6 +359,8 @@ type model struct {
 	input         *input
 
 	mode       string // classic or leitner, for every deck
+	prefs      prefs  // the settings screen's defaults for the options screen
+	pref       int    // the settings screen's row
 	decks      *engine.DeckList
 	opts       options
 	run        *engine.Started
@@ -307,11 +382,12 @@ type model struct {
 
 func newModel(eng Engine) model {
 	return model{
-		eng:  eng,
-		now:  time.Now,
-		tick: everySecond,
-		exec: runEditor,
-		mode: classic,
+		eng:   eng,
+		now:   time.Now,
+		tick:  everySecond,
+		exec:  runEditor,
+		mode:  classic,
+		prefs: defaultPrefs(),
 	}
 }
 
@@ -390,6 +466,7 @@ func (m model) receive(r reply) (tea.Model, tea.Cmd) {
 				m.mode = s.Value
 			}
 		}
+		m.prefs.restore(v.Saved)
 		m.busy = true
 		return m, call(m.eng.Decks)
 	case *engine.DeckList:
@@ -438,7 +515,7 @@ func (m model) receive(r reply) (tea.Model, tea.Cmd) {
 		cursor := m.cursor
 		m.show(optionsScreen)
 		m.cursor, m.field = cursor, rows(m.mode)[0]
-		m.opts = defaultOptions(deck)
+		m.opts = defaultOptions(deck, m.prefs)
 		m.opts.restore(v.Saved)
 	case *engine.EditReport:
 		m.show(editsScreen)
@@ -539,6 +616,8 @@ func (m model) key(k string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.scroll(k)
+	case settingsScreen:
+		return m.settingsKey(k)
 	}
 	return m, nil
 }
@@ -576,13 +655,11 @@ func (m model) decksKey(k string) (tea.Model, tea.Cmd) {
 	case "tab", "shift+tab":
 		m.mode = map[string]string{classic: leitner, leitner: classic}[m.mode]
 		m.status = modeHint(m.mode)
-		save := engine.SaveSettingsParams{Settings: []engine.Option{{Key: modeKey, Value: m.mode}}}
-		// Remembering is a convenience: a failed save is dropped, as an
-		// option's is, and nothing waits on it.
-		return m, func() tea.Msg {
-			_, _ = m.eng.SaveSettings(save)
-			return nil
-		}
+		return m, m.saveSettings()
+	case "s":
+		m.show(settingsScreen)
+		m.pref = modeRow
+		return m, nil
 	case "enter", "m", "b", "e":
 		deck, ok := m.selected()
 		if !ok {
@@ -607,6 +684,51 @@ func (m model) decksKey(k string) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// saveSettings remembers the settings. Remembering is a convenience: a failed
+// save is dropped, as an option's is, and nothing waits on it.
+func (m model) saveSettings() tea.Cmd {
+	save := engine.SaveSettingsParams{Settings: m.prefs.saved(m.mode)}
+	return func() tea.Msg {
+		_, _ = m.eng.SaveSettings(save)
+		return nil
+	}
+}
+
+// settingsKey turns the settings screen's rows. Each change is saved as it is
+// made, so leaving is just going back to the decks, on the deck you left.
+func (m model) settingsKey(k string) (tea.Model, tea.Cmd) {
+	turn := 0
+	switch k {
+	case "esc", "q":
+		return m.backToDecks()
+	case "up", "k", "shift+tab":
+		m.pref = max(m.pref-1, 0)
+	case "down", "j", "tab":
+		m.pref = min(m.pref+1, prefRows-1)
+	case "left", "h", "-":
+		turn = -1
+	case "right", "l", "+":
+		turn = 1
+	case " ":
+		turn = 1
+		if m.pref == modeRow && m.mode == leitner {
+			turn = -1 // the mode is two values, so space flips it
+		}
+	}
+	if turn == 0 {
+		return m, nil
+	}
+	switch m.pref {
+	case modeRow:
+		m.mode = map[int]string{-1: classic, 1: leitner}[turn]
+	case countPref:
+		m.prefs.count.turn(turn)
+	case limitPref:
+		m.prefs.limit.turn(turn)
+	}
+	return m, m.saveSettings()
 }
 
 func (m model) loadMisses(deck string) (tea.Model, tea.Cmd) {

@@ -14,6 +14,8 @@ stateDiagram-v2
     [*] --> Decks
 
     Decks --> Options: enter
+    Decks --> Settings: s
+    Settings --> Decks: esc
     Decks --> Reports: m / b / e
     Reports --> Decks: esc
 
@@ -64,10 +66,29 @@ run beside the list. The run mode is chosen here, for every deck at once.
 | `m` | the deck's miss list |
 | `b` | the deck's Leitner boxes |
 | `e` | the deck's edit list |
+| `s` | the settings |
 | `r` | reload the deck list |
 | `q` | quit |
 
 A deck that failed to load cannot be opened. Its error shows instead.
+
+### Settings (`settingsScreen`)
+
+What applies to lernt as a whole rather than to one deck, with a line under the
+rows saying what the focused one does. Each change is saved as it is made
+(`SaveSettings`), so `esc` only goes back to the decks, on the deck you left.
+
+| Key | Does |
+|---|---|
+| `↑↓` `j/k` `tab` | move between rows |
+| `←→` `h/l` `-/+` | turn the focused row |
+| `space` | flip the mode; turn the other rows one step on |
+| `esc` `q` | back to the decks |
+
+The rows: the mode (the same choice `tab` makes on the deck list), and the cards
+and seconds that the options screen starts from for a deck that sets neither
+`count` nor `limit`. A deck's own values win, and so does anything already saved
+for it on the options screen.
 
 ### Options (`optionsScreen`)
 

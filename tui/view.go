@@ -114,6 +114,8 @@ func (m model) page() page {
 		return m.editsPage()
 	case sourcesScreen:
 		return m.sourcesPage()
+	case settingsScreen:
+		return m.settingsPage()
 	}
 	return m.decksPage()
 }
@@ -149,7 +151,7 @@ func marker(on bool) string {
 
 func (m model) decksPage() page {
 	p := page{title: "Decks", keys: []string{
-		"enter", "run", "tab", "mode", "m", "misses", "b", "boxes", "e", "edits", "r", "refresh", "q", "quit"}}
+		"enter", "run", "tab", "mode", "m", "misses", "b", "boxes", "e", "edits", "s", "settings", "r", "refresh", "q", "quit"}}
 	switch {
 	case m.decks == nil:
 		p.body = []string{"Loading decks..."}
@@ -431,6 +433,48 @@ func (m model) optionsPage() page {
 		p.keys = slices.Insert(p.keys, len(p.keys)-2, "c", "sources")
 	}
 	return p
+}
+
+var prefLabels = [prefRows]string{"Mode", "Cards", "Seconds"}
+
+// settingsPage is the settings for lernt as a whole: one card of wheels, and
+// what the focused one does under it.
+func (m model) settingsPage() page {
+	p := page{context: "settings", narrow: true, title: "Settings", keys: []string{
+		"↑↓", "choose", "←→", "change", "esc", "back"}}
+	mode := wheel{labels: []string{classic, leitner}, values: []int{0, 1}}
+	mode.at = slices.Index(mode.labels, m.mode)
+	wheels := [prefRows]wheel{modeRow: mode, countPref: m.prefs.count, limitPref: m.prefs.limit}
+
+	slot := 0
+	for _, w := range wheels {
+		for _, label := range w.labels {
+			slot = max(slot, cells(label))
+		}
+	}
+	for i, w := range wheels {
+		label := fit(prefLabels[i], labelWidth)
+		if i == m.pref {
+			label = bold.Render(label)
+		}
+		p.pinned = append(p.pinned, marker(i == m.pref)+label+w.render(i == m.pref, slot, 1))
+	}
+	p.pinned = append(p.pinned, "")
+	p.body = wrap([]string{prefHint(m.pref, m.mode)}, m.inner(true))
+	return p
+}
+
+// prefHint says what a setting does, at its current value where that matters.
+func prefHint(row int, mode string) string {
+	switch row {
+	case countPref:
+		return "How many cards a run asks for, in a deck that does not set its own count. " +
+			"∞ runs until you stop it."
+	case limitPref:
+		return "Seconds for each answer, in a deck that does not set its own limit. " +
+			"auto gives each card its own time; off leaves the clock out."
+	}
+	return modeHint(mode) + " This applies to every deck. On the deck list, tab switches it."
 }
 
 // shownSources is how many of a deck's card sources the options screen lists;

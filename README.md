@@ -144,6 +144,12 @@ beside the list: its description, its card count, what is on the miss list, its
 cards by Leitner box, and when it last ran. In leitner mode the list shows what
 each deck has due, and the highlighted deck says what is due today.
 
+`s` on the deck list opens the settings screen, for what applies to lernt as a
+whole: the mode, and the number of cards and the seconds per answer that the
+options screen starts from for a deck that sets neither in its `deck.toml`. A
+change is saved as it is made, through the engine, so another frontend reads the
+same settings.
+
 It runs the whole walk: choose a deck, set the run (cards, seconds, follow
 branches for me, drafts, only the miss list - classic only - edit mode, a
 filter), answer against a clock, score, pick the next card, and in edit mode
