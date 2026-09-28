@@ -151,7 +151,8 @@ func marker(on bool) string {
 
 func (m model) decksPage() page {
 	p := page{title: "Decks", keys: []string{
-		"enter", "run", "tab", "mode", "m", "misses", "b", "boxes", "e", "edits", "s", "settings", "r", "refresh", "q", "quit"}}
+		"enter", "run", "tab", "mode", "n", "new card", "N", "new deck", "m", "misses", "b", "boxes", "e", "edits", "s", "settings",
+		"r", "refresh", "q", "quit"}}
 	switch {
 	case m.decks == nil:
 		p.body = []string{"Loading decks..."}

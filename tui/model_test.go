@@ -41,6 +41,11 @@ type fake struct {
 	saves []engine.SaveOptionsParams
 
 	settings map[string]string // key -> value, as the engine keeps them
+
+	newDeck  engine.NewDeckParams
+	newCard  engine.NewCardParams
+	problems []string
+	opened   []string // the paths handed to the editor
 }
 
 func (f *fake) record(call string) { f.calls = append(f.calls, call) }
@@ -94,6 +99,25 @@ func (f *fake) Boxes(engine.DeckParams) (*engine.BoxReport, error) {
 func (f *fake) Edits(engine.DeckParams) (*engine.EditReport, error) {
 	f.record("edits")
 	return &f.edits, nil
+}
+
+func (f *fake) CreateDeck(p engine.NewDeckParams) (*engine.NewDeck, error) {
+	f.record("create deck")
+	f.newDeck = p
+	id := strings.ToLower(strings.ReplaceAll(p.Name, " ", "-"))
+	f.decks.Decks = append(f.decks.Decks, engine.DeckInfo{ID: id, Name: p.Name})
+	return &engine.NewDeck{ID: id, Path: "/decks/" + id}, nil
+}
+
+func (f *fake) CreateCard(p engine.NewCardParams) (*engine.NewCard, error) {
+	f.record("create card")
+	f.newCard = p
+	return &engine.NewCard{ID: "Q", Path: "/decks/" + p.Deck + "/Q.md"}, nil
+}
+
+func (f *fake) CheckDeck(p engine.DeckParams) (*engine.Problems, error) {
+	f.record("check")
+	return &engine.Problems{Deck: p.Deck, Problems: f.problems}, nil
 }
 
 func (f *fake) LoadSettings() (*engine.Settings, error) {
@@ -153,7 +177,10 @@ func start(t *testing.T, f *fake) (model, *clock) {
 	m := newModel(f)
 	m.now = c.now
 	m.tick = func(int) tea.Cmd { return nil }
-	m.exec = func(path string) tea.Cmd { return func() tea.Msg { return editorDone{} } }
+	m.exec = func(path string) tea.Cmd {
+		f.opened = append(f.opened, path)
+		return func() tea.Msg { return editorDone{} }
+	}
 	return drive(m, m.Init()), c
 }
 
@@ -894,4 +921,102 @@ func TestTheSettingsScreenIsThereWithNoDecks(t *testing.T) {
 	sees(t, m, "Settings")
 	m = press(m, "esc")
 	sees(t, m, "No decks in")
+}
+
+func typed(m model, text string) model {
+	for _, r := range text {
+		if r == ' ' {
+			m = press(m, "space")
+		} else {
+			m = press(m, string(r))
+		}
+	}
+	return m
+}
+
+func TestANewDeckIsNamedDescribedAndSelected(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m = press(m, "N")
+	sees(t, m, "New deck's name")
+	m = press(m, "enter")
+	sees(t, m, "New deck's name") // a deck needs a name
+	m = typed(m, "Rivers")
+	m = press(m, "enter")
+	sees(t, m, "What it is about")
+	m = typed(m, "Long ones")
+	m = press(m, "enter")
+	if f.newDeck.Name != "Rivers" || f.newDeck.Description != "Long ones" {
+		t.Fatalf("asked for %+v", f.newDeck)
+	}
+	sees(t, m, "Made the deck rivers", "n adds a card")
+	if d, _ := m.selected(); d.ID != "rivers" {
+		t.Fatalf("the cursor is on %q, not the new deck", d.ID)
+	}
+	calls(t, f, "settings", "decks", "create deck", "decks")
+}
+
+func TestANewDeckCanBeCancelled(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m = press(m, "N")
+	m = typed(m, "Rivers")
+	m = press(m, "esc")
+	calls(t, f, "settings", "decks")
+	lacks(t, m, "New deck's name")
+}
+
+func TestANewCardIsWrittenThenOpenedInTheEditorThenChecked(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m = press(m, "n")
+	sees(t, m, "New card's question")
+	m = typed(m, "What is a delta?")
+	m = press(m, "enter")
+	if f.newCard.Deck != "capitals" || f.newCard.Title != "What is a delta?" {
+		t.Fatalf("asked for %+v", f.newCard)
+	}
+	if !slices.Equal(f.opened, []string{"/decks/capitals/Q.md"}) {
+		t.Fatalf("the editor was given %v", f.opened)
+	}
+	sees(t, m, "Made the card Q.")
+	lacks(t, m, "problem")
+	calls(t, f, "settings", "decks", "create card", "check", "decks")
+	if m.authoring != nil {
+		t.Fatal("still authoring")
+	}
+}
+
+func TestWhatTheEditorBrokeIsSaid(t *testing.T) {
+	f := newFake()
+	f.problems = []string{"Q: follow-up points at a missing card: Gone"}
+	m, _ := start(t, f)
+	m = press(m, "n")
+	m = typed(m, "A question")
+	m = press(m, "enter")
+	sees(t, m, "1 problem", "missing card: Gone")
+}
+
+func TestAnEditorThatFailsLeavesTheCardAndSaysWhere(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m.exec = func(path string) tea.Cmd {
+		return func() tea.Msg { return editorDone{err: &engine.Error{Message: "exit status 1"}} }
+	}
+	m = press(m, "n")
+	m = typed(m, "A question")
+	m = press(m, "enter")
+	sees(t, m, "The editor failed", "/decks/capitals/Q.md")
+	calls(t, f, "settings", "decks", "create card", "decks")
+}
+
+func TestANewCardNeedsADeckAndAQuestion(t *testing.T) {
+	f := newFake()
+	m, _ := start(t, f)
+	m = press(m, "n", "enter")
+	sees(t, m, "New card's question")
+	calls(t, f, "settings", "decks")
+	m = press(m, "esc", "down", "n")
+	sees(t, m, "Choose a deck")
+	calls(t, f, "settings", "decks")
 }

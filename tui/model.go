@@ -32,6 +32,9 @@ type Engine interface {
 	SaveOptions(engine.SaveOptionsParams) (*engine.Options, error)
 	LoadSettings() (*engine.Settings, error)
 	SaveSettings(engine.SaveSettingsParams) (*engine.Settings, error)
+	CreateDeck(engine.NewDeckParams) (*engine.NewDeck, error)
+	CreateCard(engine.NewCardParams) (*engine.NewCard, error)
+	CheckDeck(engine.DeckParams) (*engine.Problems, error)
 }
 
 type screen int
@@ -321,6 +324,12 @@ type input struct {
 	kind   string
 	prompt string
 	text   []rune
+	carry  string // what an earlier prompt of the same task was answered
+}
+
+// authoring is a card just written by the engine and handed to the editor.
+type authoring struct {
+	deck, id, path string
 }
 
 // reply is an engine call's result arriving back in Update, typed by its value.
@@ -357,6 +366,9 @@ type model struct {
 	field         int    // the options screen
 	offset        int    // scroll, on screens that scroll
 	input         *input
+	authoring     *authoring // a new card open in the editor
+	newDeck       string     // a deck just made, for the list to put the cursor on
+	authorDeck    string     // the deck a new card is being asked for
 
 	mode       string // classic or leitner, for every deck
 	prefs      prefs  // the settings screen's defaults for the options screen
@@ -419,6 +431,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.tick(m.asking)
 		}
 	case editorDone:
+		if m.authoring != nil {
+			return m.authored(msg.err)
+		}
 		if msg.err != nil {
 			m.busy = false
 			m.status = "The editor failed (" + msg.err.Error() + "); taking no edit."
@@ -472,6 +487,25 @@ func (m model) receive(r reply) (tea.Model, tea.Cmd) {
 	case *engine.DeckList:
 		m.decks = v
 		m.cursor = max(min(m.cursor, len(v.Decks)-1), 0)
+		if i := slices.IndexFunc(v.Decks, func(d engine.DeckInfo) bool { return d.ID == m.newDeck }); i >= 0 {
+			m.cursor = i
+		}
+		m.newDeck = ""
+	case *engine.NewDeck:
+		m.status = "Made the deck " + v.ID + ". n adds a card to it."
+		m.newDeck, m.busy = v.ID, true
+		return m, call(m.eng.Decks)
+	case *engine.NewCard:
+		m.authoring = &authoring{deck: m.authorDeck, id: v.ID, path: v.Path}
+		m.busy = true
+		return m, m.exec(v.Path)
+	case *engine.Problems:
+		m.status = "Made the card " + m.authoring.id + "."
+		if n := len(v.Problems); n > 0 {
+			m.status += " " + plural(n, "problem") + ": " + v.Problems[0]
+		}
+		m.authoring, m.busy = nil, true
+		return m, call(m.eng.Decks)
 	case *engine.Started:
 		m.run, m.summary = v, nil
 		return m.ask(v.Card)
@@ -660,6 +694,18 @@ func (m model) decksKey(k string) (tea.Model, tea.Cmd) {
 		m.show(settingsScreen)
 		m.pref = modeRow
 		return m, nil
+	case "N":
+		m.input = &input{kind: "deck-name", prompt: "New deck's name"}
+		return m, nil
+	case "n":
+		deck, ok := m.selected()
+		if !ok {
+			m.status = "Choose a deck to add the card to, or N makes a new one."
+			return m, nil
+		}
+		m.authorDeck = deck.ID
+		m.input = &input{kind: "card", prompt: "New card's question"}
+		return m, nil
 	case "enter", "m", "b", "e":
 		deck, ok := m.selected()
 		if !ok {
@@ -729,6 +775,21 @@ func (m model) settingsKey(k string) (tea.Model, tea.Cmd) {
 		m.prefs.limit.turn(turn)
 	}
 	return m, m.saveSettings()
+}
+
+// authored is the editor closing on a card the engine has just written. The
+// card is there whatever happened in the editor, so it is only reported; what
+// the editor left in it is the engine's to check.
+func (m model) authored(err error) (tea.Model, tea.Cmd) {
+	a := m.authoring
+	if err != nil {
+		m.authoring, m.busy = nil, true
+		m.status = "The editor failed (" + err.Error() + "); the card is at " + tilde(a.path) + "."
+		return m, call(m.eng.Decks)
+	}
+	m.busy = true
+	p := engine.DeckParams{Deck: a.deck}
+	return m, call(func() (*engine.Problems, error) { return m.eng.CheckDeck(p) })
 }
 
 func (m model) loadMisses(deck string) (tea.Model, tea.Cmd) {
@@ -902,6 +963,24 @@ func (m model) typing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, call(func() (*engine.Standing, error) {
 				return m.eng.Flag(engine.FlagParams{Reason: text})
 			})
+		case "deck-name":
+			if strings.TrimSpace(text) == "" {
+				m.input = in // a deck needs a name: keep asking
+				return m, nil
+			}
+			m.input = &input{kind: "deck-about", prompt: "What it is about (optional)", carry: text}
+		case "deck-about":
+			p := engine.NewDeckParams{Name: in.carry, Description: text}
+			m.busy = true
+			return m, call(func() (*engine.NewDeck, error) { return m.eng.CreateDeck(p) })
+		case "card":
+			if strings.TrimSpace(text) == "" {
+				m.input = in // a card needs a question: keep asking
+				return m, nil
+			}
+			p := engine.NewCardParams{Deck: m.authorDeck, Title: text}
+			m.busy = true
+			return m, call(func() (*engine.NewCard, error) { return m.eng.CreateCard(p) })
 		}
 	case tea.KeyBackspace:
 		if len(in.text) > 0 {

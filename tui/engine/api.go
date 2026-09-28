@@ -5,7 +5,7 @@ package engine
 // either side that the other has not made fails the Go tests.
 
 // Protocol is the API version this client speaks.
-const Protocol = "lernt.api/6"
+const Protocol = "lernt.api/7"
 
 // Error codes from lernt/api.py.
 const (
@@ -263,6 +263,48 @@ type SaveSettingsParams struct {
 	Settings []Option `json:"settings"`
 }
 
+type NewDeckParams struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type NewDeck struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type NewCardParams struct {
+	Deck      string   `json:"deck"`
+	Title     string   `json:"title"`
+	Answer    string   `json:"answer"`
+	Notes     string   `json:"notes"`
+	Reference string   `json:"reference"`
+	Time      *int     `json:"time"` // seconds of its own; 0: untimed; nil: the run's
+	Follows   []string `json:"follows"`
+	Draft     bool     `json:"draft"`
+}
+
+type NewCard struct {
+	ID   string `json:"id"`
+	Path string `json:"path"` // the file written, to open in an editor
+}
+
+type CardSummary struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Draft bool   `json:"draft"`
+}
+
+type CardList struct {
+	Deck  string        `json:"deck"`
+	Cards []CardSummary `json:"cards"`
+}
+
+type Problems struct {
+	Deck     string   `json:"deck"`
+	Problems []string `json:"problems"`
+}
+
 // Method is one API call: its params and result types.
 type Method struct {
 	Params any
@@ -290,4 +332,8 @@ var Methods = map[string]Method{
 	"options.save":  {SaveOptionsParams{}, Options{}},
 	"settings.load": {NoParams{}, Settings{}},
 	"settings.save": {SaveSettingsParams{}, Settings{}},
+	"deck.create":   {NewDeckParams{}, NewDeck{}},
+	"card.create":   {NewCardParams{}, NewCard{}},
+	"card.list":     {DeckParams{}, CardList{}},
+	"deck.check":    {DeckParams{}, Problems{}},
 }

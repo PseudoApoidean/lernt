@@ -252,3 +252,23 @@ func (c *Client) SaveSettings(p SaveSettingsParams) (*Settings, error) {
 	var r Settings
 	return &r, c.call("settings.save", p, &r)
 }
+
+func (c *Client) CreateDeck(p NewDeckParams) (*NewDeck, error) {
+	var r NewDeck
+	return &r, c.call("deck.create", p, &r)
+}
+
+func (c *Client) CreateCard(p NewCardParams) (*NewCard, error) {
+	var r NewCard
+	return &r, c.call("card.create", p, &r)
+}
+
+func (c *Client) ListCards(p DeckParams) (*CardList, error) {
+	var r CardList
+	return &r, c.call("card.list", p, &r)
+}
+
+func (c *Client) CheckDeck(p DeckParams) (*Problems, error) {
+	var r Problems
+	return &r, c.call("deck.check", p, &r)
+}
