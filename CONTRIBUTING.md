@@ -11,6 +11,7 @@ lernt/
   leitner.py  the Leitner schedule, replayed from the attempt log: boxes and what is due
   edits.py    the append-only edit log, and what still stands against a card
   options.py  a frontend's saved options per deck: keys to values, merged on save
+  author.py   writing a new deck or card: the inverse of config.load and deck.parse_card
   text.py     Markdown -> something a terminal can print
   api.py      the API: every operation a frontend can ask of lernt, as typed calls
   rpc.py      the API as JSON-RPC over stdio (lernt-deck --serve), and its JSON Schema

@@ -18,6 +18,12 @@ lernt \- drill a deck of Markdown flash cards
 .br
 .B lernt \-\-list
 .br
+.B lernt \-\-new\-deck
+\fINAME\fR [\fB\-\-about\fR \fITEXT\fR]
+.br
+.B lernt
+\fIDECK\fR \fB\-\-new\fR \fIQUESTION\fR [\fB\-\-answer\fR \fITEXT\fR] [\fB\-\-follows\fR \fICARD\fR]... [\fB\-\-time\fR \fISECONDS\fR] [\fB\-\-as\-draft\fR]
+.br
 .B lernt\-deck
 \fIDECK\fR [\fB\-\-out\fR \fIFILE\fR] [\fB\-\-check\fR]
 .br
@@ -137,6 +143,37 @@ and, when none is, the day one will be. Then stop.
 Print the miss list and stop.
 .B \-\-all
 widens it to every card ever attempted.
+.TP
+.BR \-\-new\-deck " " \fINAME\fR
+Make a new, empty deck in the decks directory and stop. Its id is made from
+\fINAME\fR (\fBCapital cities\fR is \fBcapital\-cities\fR), its cards go beside
+its \fBdeck.toml\fR, and a deck already there is never replaced.
+.B \-\-about
+gives it a description.
+.TP
+.BR \-\-new " " \fIQUESTION\fR
+Add a card asking \fIQUESTION\fR to \fIDECK\fR, written into the deck's first
+card directory. Its id is the question with what a filename cannot hold taken
+out. Without
+.B \-\-answer
+the card is then opened in $VISUAL or $EDITOR to be written, and the deck is
+checked when the editor closes (as
+.B lernt\-deck \-\-check
+does), listing anything wrong with it. Where there is no terminal the card is
+left for you to open. A card that already has the id is never overwritten.
+.TP
+.BR \-\-answer " " \fITEXT\fR
+With \fB\-\-new\fR, the card's answer.
+.TP
+.BR \-\-follows " " \fICARD\fR
+With \fB\-\-new\fR, the id of a card the deck already has, for this one to lead
+to. Repeatable. An id the deck does not have is refused and nothing is written.
+.TP
+.BR \-\-time " " \fISECONDS\fR
+With \fB\-\-new\fR, the card's own time, or \fBoff\fR to answer it untimed.
+.TP
+.B \-\-as\-draft
+With \fB\-\-new\fR, tag the card #draft.
 .TP
 .BR \-\-json " " \fIFILE\fR
 Run from a deck JSON written by
@@ -445,7 +482,16 @@ merges, keeping keys it was not sent);
 .B settings.load
 and
 .B settings.save
-(the same, for lernt as a whole rather than one deck).
+(the same, for lernt as a whole rather than one deck);
+.B deck.create
+and
+.B card.create
+(write a new deck, or a card into a deck's first card directory, refusing a name
+or follow-up that would clash or dangle);
+.B card.list
+(a deck's card ids and questions, for choosing follow-ups) and
+.B deck.check
+(what is wrong with a deck's cards).
 There is one run at a time, and the card methods act on the card it is on.
 An error carries a code: 1 no such deck, 2 no cards matched, 3 nothing on the
 miss list, 4 not at this point in the run, 5 invalid values, 6 nothing due

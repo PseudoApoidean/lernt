@@ -67,10 +67,20 @@ run beside the list. The run mode is chosen here, for every deck at once.
 | `b` | the deck's Leitner boxes |
 | `e` | the deck's edit list |
 | `s` | the settings |
+| `N` | make a new deck: its name, then what it is about |
+| `n` | add a card to the highlighted deck: its question, then the editor |
 | `r` | reload the deck list |
 | `q` | quit |
 
 A deck that failed to load cannot be opened. Its error shows instead.
+
+`N` and `n` ask on the footer line, as the edit screen does: `enter` accepts, `esc`
+drops it. A deck needs a name and a card a question, so a blank one is asked for
+again. A new deck is made and the cursor put on it. A new card is written by the
+engine first (`CreateCard`), then handed to `$VISUAL` / `$EDITOR`; when that closes
+the deck is checked (`CheckDeck`) and the first problem is shown, and the list is
+reloaded. If the editor fails the card stays as it was made, and its path is shown.
+With no decks, `n` is asked to choose one, and `N` is the way in.
 
 ### Settings (`settingsScreen`)
 

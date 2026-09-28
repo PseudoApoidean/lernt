@@ -36,6 +36,21 @@ boxes = [1, 2, 4, 8, 16]       # optional; days between reviews in each Leitner 
 and a list to pool several banks. So cards can stay in a notes vault, or ship as
 a directory you copy anywhere. `examples/decks/` has one of each.
 
+## Making a deck
+
+You do not have to write the files by hand. In the TUI, `N` on the deck list
+asks for a name and a line on what the deck is about, and makes the deck; `n`
+asks for a question, writes the card, and opens it in `$VISUAL` or `$EDITOR` to
+be written. From the terminal, `lernt --new-deck NAME` and
+`lernt DECK --new QUESTION` do the same (see Usage). When the editor closes, the
+deck is checked, and anything wrong with the card - a follow-up that points at
+no card, a time that is not a duration - is said straight away.
+
+Both go through the engine (`deck.create`, `card.create`), which refuses a name
+already in use and a follow-up that is not a card the deck has, so neither
+overwrites work or leaves a dangling link. The card is written to the deck's
+first card directory.
+
 ## Cards
 
 One Markdown file per card; the filename stem is its id.
@@ -121,6 +136,10 @@ lernt embedded --misses        # what you have been getting wrong
 lernt embedded -e              # a normal run, plus: e)dit, n)ote, x) flag for removal
 lernt embedded --edits         # the notes and removal flags still standing
 
+lernt --new-deck "Capital cities"          # a new, empty deck
+lernt capital-cities --new "Capital of France?"   # a new card, opened in $EDITOR
+lernt capital-cities --new "Capital of Spain?" --answer Madrid. --follows France
+
 lernt --cards DIR --cards DIR  # no deck at all, for a one-off
 lernt-deck --list              # the decks, as JSON
 lernt-deck --schema            # the API: every method's params and result
@@ -143,6 +162,9 @@ today), and the TUI remembers it in `settings.json`. The highlighted deck shows
 beside the list: its description, its card count, what is on the miss list, its
 cards by Leitner box, and when it last ran. In leitner mode the list shows what
 each deck has due, and the highlighted deck says what is due today.
+
+`N` and `n` on the deck list make a deck, and add a card to the highlighted one
+(see Making a deck).
 
 `s` on the deck list opens the settings screen, for what applies to lernt as a
 whole: the mode, and the number of cards and the seconds per answer that the
