@@ -1,0 +1,501 @@
+.TH LERNT 1 "2026-09-21" "lernt 2.0.0" "User Commands"
+.SH NAME
+lernt \- drill a deck of Markdown flash cards
+.SH SYNOPSIS
+.B lernt
+.br
+.B lernt
+\fIDECK\fR [\fB\-n\fR \fICOUNT\fR] [\fB\-t\fR \fISECONDS\fR] [\fB\-a\fR] [\fB\-d\fR] [\fB\-f\fR \fIFILTER\fR] [\fB\-w\fR | \fB\-l\fR] [\fB\-e\fR]
+.br
+.B lernt
+\fIDECK\fR \fB\-\-misses\fR [\fB\-\-all\fR]
+.br
+.B lernt
+\fIDECK\fR \fB\-\-boxes\fR
+.br
+.B lernt
+\fIDECK\fR \fB\-\-edits\fR
+.br
+.B lernt \-\-list
+.br
+.B lernt\-deck
+\fIDECK\fR [\fB\-\-out\fR \fIFILE\fR] [\fB\-\-check\fR]
+.br
+.B lernt\-deck \-\-list
+.br
+.B lernt\-deck
+\fB\-\-serve\fR | \fB\-\-schema\fR
+.SH DESCRIPTION
+.B lernt
+asks a question from a deck, times your answer, reveals the card's answer,
+takes a pass/shaky/fail score, and then asks where to go next \- one of the
+follow-ups the card names, or somewhere random.
+.PP
+Every score also moves the card through a Leitner schedule \- see
+.B LEITNER BOXES
+below \- and
+.B \-l
+runs only the cards that schedule has due.
+.PP
+With no arguments at all,
+.B lernt
+starts the TUI that ships with it, when standard input and output are a
+terminal. Where the TUI is not built, or there is no terminal, it lists the
+decks instead. The TUI is handed the engine command in \fBLERNT_ENGINE\fR, a
+JSON array, and reaches the engine through it and nothing else.
+.PP
+A
+.I deck
+is a directory holding a \fBdeck.toml\fR \- see
+.B DECKS
+below. There are no built-in paths and no built-in subject.
+.PP
+The tool is an engine with an API, and frontends over it. The engine reads a
+deck's Markdown cards and decides everything about a run: which card comes
+next, what is logged, what counts as a miss.
+.B lernt
+calls the API in-process; the TUI calls it over JSON-RPC, from
+.BR "lernt\-deck \-\-serve" .
+Writing a frontend means calling the same API \- see
+.BR API .
+.SH OPTIONS
+.SS lernt
+.TP
+.I DECK
+The deck to run: the bare name of a deck in the decks directory, or a path to a
+deck directory (or its \fBdeck.toml\fR). A run option given without a deck is
+an error listing the decks \- nothing is picked for you, because a run logs
+against the deck it ran.
+.TP
+.BR \-n " " \fICOUNT\fR
+Cards in the run. 0 runs until you stop it. Default 10.
+.TP
+.BR \-t " " \fISECONDS\fR
+Seconds per answer for every card, before it is reported as over the limit, or
+\fBoff\fR to run untimed. Without it, each card gets its own \fBTime\fR, and a
+card with none gets the deck's \fBlimit\fR, else 30. The limit is advisory: it
+never cuts an answer off.
+.TP
+.B \-a
+Follow the branches automatically rather than offering a menu: an unasked
+follow-up of the current card if there is one, otherwise a fresh random card.
+.TP
+.BR \-d ", " \-\-drafts
+Let random jumps and
+.B \-a
+land on cards tagged \fB#draft\fR. They are excluded by default; a draft offered
+as a follow-up on the menu is always reachable, and marked.
+.TP
+.BR \-f " " \fIFILTER\fR
+Restrict the pool to cards whose id contains \fIFILTER\fR, case-insensitively.
+.TP
+.BR \-w ", " \-\-weak
+Drill only the cards on the miss list \- those whose most recent attempt was
+shaky or fail.
+.TP
+.BR \-l ", " \-\-due
+Drill only the cards the Leitner schedule has due today, new cards included,
+lowest box first. Not with
+.BR \-w .
+.TP
+.BR \-e ", " \-\-edit
+Edit mode. A normal run with one more step after each score:
+.RS
+.TP
+.B e
+Open the card's file in \fBVISUAL\fR, else \fBEDITOR\fR, else \fBvi\fR, then
+show it again as it now reads. An editor that saves nothing, or exits non-zero,
+is not an edit.
+.TP
+.B n
+Leave a note against the card.
+.TP
+.B x
+Flag the card for removal, with an optional reason.
+.TP
+.B d
+Clear what stands against the card without editing it here. Offered only when
+something stands.
+.TP
+.B Enter
+Go on.
+.RE
+.IP
+Entries go to the edit log even under
+.BR \-\-no\-log ,
+which is about the run, not the deck.
+.TP
+.B \-\-edits
+Print the edit list and stop: every card with notes or removal flags standing,
+flags first, each with the path of its file.
+.TP
+.B \-\-boxes
+Print how many cards sit in each Leitner box, how many of them are due today,
+and, when none is, the day one will be. Then stop.
+.TP
+.B \-\-misses
+Print the miss list and stop.
+.B \-\-all
+widens it to every card ever attempted.
+.TP
+.BR \-\-json " " \fIFILE\fR
+Run from a deck JSON written by
+.B lernt\-deck
+instead of reading the cards.
+.TP
+.BR \-\-cards " " \fIDIR\fR
+A card directory, repeatable. Runs with no deck at all; the run's id is then
+\fBad-hoc\fR, and it logs under that.
+.TP
+.B \-\-list
+List the decks, their banks and their logs, and stop. A deck that does not load
+is listed as unusable rather than omitted.
+.TP
+.BR \-\-log " " \fIFILE\fR ", " \-\-no\-log
+Where attempts are recorded, or that they are not.
+.SS lernt-deck
+Takes the same \fIDECK\fR and \fB\-\-cards\fR as
+.BR lernt .
+.TP
+.BR \-\-out " " \fIFILE\fR
+Where to write the deck. Default stdout.
+.TP
+.B \-\-check
+Report the card count, how many cards offer branches, how many are drafts, and
+any follow-up pointing at a card that does not exist. Writes no deck. Exits 1 if
+a problem was found.
+.TP
+.B \-\-list
+Write every deck in the decks directory as JSON \- see
+.BR "DECK LIST FORMAT" .
+.TP
+.B \-\-serve
+Serve the API as JSON-RPC 2.0 on standard input and output, one message per
+line, until standard input closes \- see
+.BR API .
+.TP
+.B \-\-schema
+Write every API method's params and result as JSON Schema.
+.SH DECKS
+A deck is a directory in the decks directory,
+.IR ~/.local/share/lernt/decks ,
+holding a \fBdeck.toml\fR. A symlink to a directory elsewhere \- a folder in a
+notes vault \- is a deck too.
+.PP
+.nf
+[deck]
+name  = "Embedded screens"
+description = "Questions from embedded technical screens"
+cards = ["Questions"]
+count = 10
+limit = 30
+boxes = [1, 2, 4, 8, 16]
+.fi
+.PP
+Every key is optional, and an empty file is a deck of defaults.
+.TP
+.B name
+What the deck is called on screen. Defaults to the directory name.
+.TP
+.B description
+A line or two on what the deck is, shown beside it in the deck list.
+.TP
+.B cards
+A directory, or a list of them, holding the cards. Defaults to the deck
+directory itself. Relative paths resolve against the deck directory \- its real
+location, when the deck is a symlink \- and absolute or \fB~\fR paths point
+anywhere. Several directories are drilled as one pool, in the order written; if
+two hold a card of the same id the first wins and
+.B \-\-check
+reports the clash.
+.TP
+.B count
+The run's default card count, as
+.BR \-n ,
+which still overrides it.
+.TP
+.B limit
+Seconds for a card that sets no \fBTime\fR of its own; 0 leaves such cards
+untimed.
+.B \-t
+overrides it, along with every card's own time.
+.TP
+.B boxes
+The Leitner schedule: a list of days, one per box, that a card in that box
+waits between reviews. Defaults to \fB[1, 2, 4, 8, 16]\fR \- five boxes. Its
+length is the number of boxes. Changing it re-reads every card's history under
+the new schedule; nothing is stored to migrate.
+.TP
+.BR log ", " edits
+Where the attempt and edit logs go, if not the defaults under
+.BR FILES .
+.PP
+A deck's
+.I id
+is its directory name in the decks directory \- the link's name, for a symlink
+\- and never its \fBname\fR. The id names the logs, so retitling a deck keeps
+its history.
+.SH CARD FORMAT
+One Markdown file per card. The filename stem is the card's id, and it is the
+identity everything else \- follow-up links, the logs \- refers to. Files whose
+name starts with \fB!\fR are skipped.
+.PP
+.nf
+# The question
+
+> [!tip]
+> The answer.
+
+Notes, shown after the answer.
+
+---
+
+**Reference:** [[Some longer note]]
+**Time:** 45s
+**Follow-ups:**
+1. [[Another card|Its question]]
+
+#draft #other-tag
+.fi
+.PP
+The first line starting \fB#\ \fR is the question. The first callout, of any
+type, is the answer, and the rest of the body is notes; a card with no callout
+is all answer. Everything below the first \fB---\fR is metadata: a
+\fBReference\fR, a \fBTime\fR (\fB45\fR, \fB45s\fR, \fB2m\fR, \fB1m30s\fR, or \fBoff\fR to answer it untimed), numbered follow-up links \- the target's filename stem is the
+id, and any folder path, heading or alias in the link is ignored \- and tags.
+.PP
+There is no "follows from" field. The reverse edges are computed, because a
+stored copy of every edge is a second copy free to drift.
+.SH DECK FORMAT
+One JSON object,
+.B schema
+.BR lernt.deck/4 ,
+with
+.BR generated ,
+.B deck
+(the id),
+.BR name ,
+.B sources
+(its card directories), a
+.B cards
+array and
+.B problems
+(dangling follow-ups and id clashes). Each card carries
+.BR id ,
+.B source
+(the directory it came from),
+.BR title ,
+.B answer
+and
+.B notes
+(arrays of Markdown lines),
+.B followups
+and
+.B parents
+(card ids),
+.BR reference ,
+.B time
+(seconds; 0 untimed; null when the card sets none),
+.B tags
+and
+.BR draft .
+Card text is emitted as the Markdown it was written in; rendering it is the
+frontend's job.
+.SH DECK LIST FORMAT
+.B lernt\-deck \-\-list
+writes one JSON object,
+.B schema
+.BR lernt.decks/1 ,
+with
+.B home
+(the decks directory) and a
+.B decks
+array. Each deck carries
+.BR id ,
+.BR name ,
+.BR path ,
+.B cards
+(directories),
+.BR count ,
+.BR limit ,
+.B log
+and
+.B edits
+(its log paths). A deck that does not load carries
+.BR id ,
+.B path
+and
+.B error
+instead.
+.SH LOG FORMAT
+Append-only JSON Lines, one file per deck. One object per attempt:
+.B v
+(format version),
+.B at
+(local ISO 8601),
+.B run
+(an id shared by one run's attempts),
+.B card
+(the id),
+.B title
+(as it read when asked),
+.B score
+(\fBpass\fR, \fBshaky\fR or \fBfail\fR),
+.B seconds
+and
+.B reached
+(\fBrandom\fR or \fBbranch\fR).
+.PP
+The log is keyed by card id and holds nothing positional, so adding cards or
+reordering a deck cannot re-point a past result. A renamed card orphans its
+own history and nothing else;
+.B \-\-misses
+names such cards as retired rather than dropping them.
+.PP
+A card is
+.I on the miss list
+when its most recent attempt was shaky or fail \- not when it has ever been
+missed. One good answer takes it off.
+.SH LEITNER BOXES
+Each card sits in a box, and box \fIn\fR comes due the number of days the
+deck's \fBboxes\fR gives for it after the card last moved. Boxes are not stored:
+they are replayed from the attempt log, one attempt at a time, so they can never
+disagree with it, and a history logged before the schedule existed counts.
+.IP \(bu 2
+A card never attempted is new, and due, as if it sat in box 1: a first pass
+puts it in box 2, a first fail or shaky in box 1.
+.IP \(bu 2
+A pass on a card that is due moves it up a box, up to the last.
+.IP \(bu 2
+A pass on a card that is not due yet changes nothing, so drilling a card over
+and over in one day does not rush it up the boxes.
+.IP \(bu 2
+A fail sends it back to box 1, due or not.
+.IP \(bu 2
+A shaky keeps it in its box and starts its wait again.
+.PP
+Every run moves cards, not only
+.BR \-l :
+a card failed anywhere has been forgotten. Days are calendar days in local time.
+.SH EDIT LOG FORMAT
+Append-only JSON Lines, one per deck, written by
+.BR \-e .
+One object per entry:
+.BR v ,
+.BR at ,
+.BR run ,
+.B card
+and
+.B title
+as in the attempt log, then
+.B kind
+and
+.BR text .
+.B kind
+is
+.B note
+(\fBtext\fR is the note),
+.B remove
+(\fBtext\fR is the reason, possibly empty),
+.B edit
+(the card file was changed from a run) or
+.B done
+(cleared by hand).
+.PP
+A note or removal flag
+.I stands
+until an
+.B edit
+or
+.B done
+for the same card follows it, or until the card is no longer in the deck.
+.SH API
+Each method takes one params object and returns one result object:
+.B engine.info
+and
+.B decks.list
+(each deck with its size, its cards by box, what is due and missed, and the
+day it last ran);
+.B run.start
+(a deck and the run options; the first card),
+.B run.score
+(score and seconds),
+.B run.menu
+(the follow-ups),
+.B run.next
+(pick \fBauto\fR, \fBrandom\fR or \fBfollowup\fR) and
+.BR run.end ;
+.B card.edit
+and
+.B card.reload
+(the file to open, then read it back),
+.BR card.note ,
+.B card.flag
+and
+.BR card.done ;
+.BR report.misses ,
+.B report.boxes
+and
+.BR report.edits ;
+.B options.load
+and
+.B options.save
+(a frontend's saved settings for a deck, as key and value strings; a save
+merges, keeping keys it was not sent);
+.B settings.load
+and
+.B settings.save
+(the same, for lernt as a whole rather than one deck).
+There is one run at a time, and the card methods act on the card it is on.
+An error carries a code: 1 no such deck, 2 no cards matched, 3 nothing on the
+miss list, 4 not at this point in the run, 5 invalid values, 6 nothing due
+today, or one of
+JSON-RPC's own. The full types are
+.BR "lernt\-deck \-\-schema" .
+.SH FILES
+.TP
+.I <package>/_bin/lernt-tui
+The TUI, built from \fItui/\fR in the source tree by \fBmake\fR.
+.TP
+.I ~/.local/share/lernt/decks/<id>/deck.toml
+The decks. Honours \fBLERNT_DECKS\fR, then \fBXDG_DATA_HOME\fR. Symlinks count.
+.TP
+.I ~/.local/state/lernt/<id>.jsonl
+The attempt log, one per deck. Honours \fBXDG_STATE_HOME\fR.
+.TP
+.I ~/.local/state/lernt/<id>.edits.jsonl
+The edit log, one per deck, beside it.
+.TP
+.I ~/.local/state/lernt/<id>.options.json
+What the TUI's options screen was last set to for the deck: a JSON object of
+option names to values. Delete it to go back to the deck's defaults.
+.TP
+.I ~/.local/state/lernt/settings.json
+The TUI's settings for lernt as a whole, such as the run mode, in the same form.
+.SH ENVIRONMENT
+.TP
+.B LERNT_DECKS
+The decks directory.
+.TP
+.B LERNT_ENGINE
+Set by \fBlernt\fR for the TUI it starts: the command that runs
+\fBlernt\-deck\fR, as a JSON array.
+.TP
+.BR XDG_DATA_HOME ", " XDG_STATE_HOME
+Bases for the decks directory and the logs.
+.TP
+.BR VISUAL ", " EDITOR
+The editor
+.B \-e
+opens a card in. Split as a shell would, so \fBcode \-w\fR works.
+.SH LIMITATIONS
+.IP \(bu 2
+The score is yours. Nothing checks what you actually said.
+.IP \(bu 2
+The logs are local and single-machine. There is no sync.
+.IP \(bu 2
+Renaming a deck's directory starts its history over. Move its log files to the
+new id if you want the history to follow.
+.IP \(bu 2
+Card ids are filenames, so renaming a card is a history-losing operation. It is
+reported, never repaired.

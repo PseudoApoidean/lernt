@@ -1,0 +1,56 @@
+#compdef lernt lernt-deck
+
+# zsh completion for lernt and lernt-deck. Install it on $fpath:
+#
+#   install -Dm644 completions/_lernt ~/.local/share/zsh/site-functions/_lernt
+#
+# Every flag here must match an argparse flag in lernt/cli.py or lernt/deck.py.
+# tests/test_completion.py fails if they differ in either direction.
+
+# A deck by bare name from the decks directory, or a deck directory by path -
+# the two things resolve() accepts. Symlinked decks count, as they do there.
+_lernt_decks() {
+  local ret=1
+  local home=${LERNT_DECKS:-${XDG_DATA_HOME:-$HOME/.local/share}/lernt/decks}
+  local -a names
+  names=( $home/*(N-/:t) )
+  (( $#names )) && _describe -t decks 'deck' names && ret=0
+  _files -/ && ret=0
+  return ret
+}
+
+case $service in
+  lernt)
+    _arguments -s \
+      '(- *)'{-h,--help}'[show help]' \
+      '-n+[cards in the run (0 = until stopped)]:count' \
+      '-t+[seconds per answer for every card, or off]:seconds:(auto off 10 30 60)' \
+      '-a[follow the branches automatically]' \
+      '(-d --drafts)'{-d,--drafts}'[random jumps may land on draft cards]' \
+      '-f+[restrict the pool to card ids matching FILTER]:filter' \
+      '(-w --weak -l --due)'{-w,--weak}'[drill only the cards last got shaky or wrong]' \
+      '(-l --due -w --weak)'{-l,--due}'[drill only the cards the Leitner schedule has due]' \
+      '(-e --edit)'{-e,--edit}'[after each score, edit, note or flag the card]' \
+      '--misses[print what you have been getting wrong]' \
+      '--all[with --misses, show every card attempted]' \
+      '--boxes[print the Leitner boxes and what is due]' \
+      '--edits[print the notes and removal flags standing]' \
+      '--json=[run from a deck JSON]:deck file:_files -g "*.json"' \
+      '*--cards=[a card directory (repeatable)]:directory:_files -/' \
+      '(- *)--list[list the decks]' \
+      '(--no-log)--log=[attempt log]:log file:_files' \
+      '(--log)--no-log[do not record this run]' \
+      '1::deck:_lernt_decks'
+    ;;
+  lernt-deck)
+    _arguments \
+      '(- *)'{-h,--help}'[show help]' \
+      '*--cards=[a card directory (repeatable)]:directory:_files -/' \
+      '--out=[where to write the deck]:file:_files' \
+      '--check[report dangling follow-ups and drafts, write nothing]' \
+      '(- *)--list[write the decks as JSON]' \
+      '(- *)--serve[serve the API as JSON-RPC over stdin and stdout]' \
+      '(- *)--schema[write the API as JSON Schema]' \
+      '1::deck:_lernt_decks'
+    ;;
+esac
