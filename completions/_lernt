@@ -38,6 +38,13 @@ case $service in
       '--json=[run from a deck JSON]:deck file:_files -g "*.json"' \
       '*--cards=[a card directory (repeatable)]:directory:_files -/' \
       '(- *)--list[list the decks]' \
+      '(- *)--new-deck=[make a new, empty deck]:deck name' \
+      '--about=[with --new-deck, what the deck is]:text' \
+      '--new=[add a card to the deck, then open it in the editor]:question' \
+      '--answer=[with --new, the card'"'"'s answer]:text' \
+      '*--follows=[with --new, a card in the deck to lead to]:card id' \
+      '--time=[with --new, the card'"'"'s own time, or off]:seconds:(off 15 30 45 60)' \
+      '--as-draft[with --new, tag the card #draft]' \
       '(--no-log)--log=[attempt log]:log file:_files' \
       '(--log)--no-log[do not record this run]' \
       '1::deck:_lernt_decks'

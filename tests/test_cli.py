@@ -444,3 +444,79 @@ def test_a_due_run_with_nothing_due_says_so_and_stops(bank, tmp_path, capsys):
         misses.append(log, card, "q", "pass", 5)  # today: due in two days
     assert cli.main(["-l", "--cards", str(bank), "--log", log]) == 0
     assert "Nothing is due today." in capsys.readouterr().out
+
+
+# -- authoring ---------------------------------------------------------------
+
+
+def test_new_deck_makes_a_deck_and_says_how_to_add_a_card(home, capsys):
+    assert cli.main(["--new-deck", "Capital cities", "--about", "Where."]) == 0
+    out = capsys.readouterr().out
+    assert "Made the deck capital-cities" in out
+    assert 'lernt capital-cities --new "' in out
+    assert (decks(home) / "capital-cities" / "deck.toml").is_file()
+
+
+def test_new_deck_will_not_replace_a_deck(home, capsys):
+    make_deck(decks(home) / "capital-cities")
+    assert cli.main(["--new-deck", "Capital cities"]) == 1
+    assert "already a deck" in capsys.readouterr().err
+
+
+def test_new_card_with_an_answer_is_written_and_checked_without_an_editor(
+    home, monkeypatch, capsys
+):
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "false")  # must not be run
+    make_deck(decks(home) / "caps", cards=())
+    args = ["caps", "--new", "Capital of France?", "--answer", "Paris.", "--time", "45"]
+    assert cli.main(args) == 0
+    assert "Made the card Capital of France in" in capsys.readouterr().out
+    text = (decks(home) / "caps" / "Capital of France.md").read_text()
+    assert "> Paris." in text and "**Time:** 45s" in text
+
+
+def test_new_card_without_an_answer_opens_the_editor(home, monkeypatch, capsys):
+    make_deck(decks(home) / "caps", cards=())
+    script = home / "editor.sh"
+    script.write_text('#!/bin/sh\nprintf "%s\\n" "Paris." >> "$1"\n')
+    script.chmod(0o755)
+    monkeypatch.delenv("VISUAL", raising=False)  # it wins over EDITOR
+    monkeypatch.setenv("EDITOR", str(script))
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    assert cli.main(["caps", "--new", "Capital of France?"]) == 0
+    assert "Paris." in (decks(home) / "caps" / "Capital of France.md").read_text()
+
+
+def test_new_card_without_an_answer_and_no_terminal_says_so(home, monkeypatch, capsys):
+    make_deck(decks(home) / "caps", cards=())
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "false")
+    monkeypatch.setattr(cli, "_interactive", lambda: False)
+    assert cli.main(["caps", "--new", "Capital of France?"]) == 0
+    assert "no answer yet" in capsys.readouterr().out
+
+
+def test_new_card_reports_what_the_editor_left_wrong(home, monkeypatch, capsys):
+    make_deck(decks(home) / "caps", cards=())
+    script = home / "editor.sh"
+    script.write_text('#!/bin/sh\nprintf "\\n---\\n\\n1. [[Gone]]\\n" >> "$1"\n')
+    script.chmod(0o755)
+    monkeypatch.delenv("VISUAL", raising=False)  # it wins over EDITOR
+    monkeypatch.setenv("EDITOR", str(script))
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    assert cli.main(["caps", "--new", "Capital of France?"]) == 1
+    assert "Gone" in capsys.readouterr().out
+
+
+def test_new_card_refuses_a_follow_up_that_is_not_a_card(home, capsys):
+    make_deck(decks(home) / "caps")
+    args = ["caps", "--new", "Which?", "--answer", "A.", "--follows", "Nothing"]
+    assert cli.main(args) == 1
+    assert "Nothing" in capsys.readouterr().err
+    assert not (decks(home) / "caps" / "Which.md").exists()
+
+
+def test_new_card_needs_a_deck(home, capsys):
+    assert cli.main(["--new", "Which?", "--answer", "A."]) == 1
+    assert "Name a deck" in capsys.readouterr().err

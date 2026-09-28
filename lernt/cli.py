@@ -6,6 +6,8 @@ USAGE: lernt
        lernt DECK --boxes
        lernt DECK --edits
        lernt --list
+       lernt --new-deck NAME [--about TEXT]
+       lernt DECK --new QUESTION [--answer TEXT] [--follows ID]... [--time SECONDS]
        lernt --cards DIR... | --json FILE  [run options]
 
 DECK is a directory holding a deck.toml: by bare name from the decks directory
@@ -23,6 +25,10 @@ Edit mode (-e) is a normal run with one more step after each score: open the
 card in $EDITOR, leave a note on it, or flag it for removal (see `edits`). The
 engine hands out the card's path and reads the file back; this module only runs
 the editor in between, because it owns the terminal.
+
+Authoring is the same: `--new-deck` and `--new` call the API's `deck.create` and
+`card.create`, and a card started without an answer is opened in $EDITOR to be
+written, then checked. A follow-up is refused unless it names a card the deck has.
 """
 
 import argparse
@@ -164,6 +170,51 @@ def build_parser():
     )
     ap.add_argument("--list", action="store_true", help="list the decks and stop")
     ap.add_argument(
+        "--new-deck",
+        metavar="NAME",
+        default=None,
+        help="make a new, empty deck called NAME in the decks directory, and stop",
+    )
+    ap.add_argument(
+        "--about",
+        metavar="TEXT",
+        default="",
+        help="with --new-deck, a line on what the deck is",
+    )
+    ap.add_argument(
+        "--new",
+        metavar="QUESTION",
+        default=None,
+        help="add a card asking QUESTION to DECK, then open it in $EDITOR unless "
+        "--answer gives it one",
+    )
+    ap.add_argument(
+        "--answer",
+        metavar="TEXT",
+        default="",
+        help="with --new, the card's answer",
+    )
+    ap.add_argument(
+        "--follows",
+        metavar="CARD",
+        action="append",
+        default=[],
+        help="with --new, the id of a card in the deck to lead to (repeatable)",
+    )
+    ap.add_argument(
+        "--time",
+        dest="card_time",
+        type=time_arg,
+        default=None,
+        metavar="SECONDS",
+        help="with --new, the card's own time, or off to answer it untimed",
+    )
+    ap.add_argument(
+        "--as-draft",
+        action="store_true",
+        help="with --new, tag the card #draft",
+    )
+    ap.add_argument(
         "--log",
         metavar="FILE",
         default=None,
@@ -181,6 +232,10 @@ def _run_main(argv=None):
 
     if args.list:
         return list_decks()
+    if args.new_deck is not None:
+        return new_deck(args)
+    if args.new is not None:
+        return new_card(args)
 
     if args.count is not None and args.count < 0:
         print("-n takes a number (0 = until you stop it).", file=sys.stderr)
@@ -505,6 +560,68 @@ def edit_step(engine, standing):
         print(f"{IND}{EDITED[kind]}")
 
 
+def new_deck(args):
+    """`--new-deck`: an empty deck, and how to put a card in it."""
+    try:
+        made = api.Engine().deck_create(
+            api.NewDeckParams(name=args.new_deck, description=args.about)
+        )
+    except api.ApiError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"Made the deck {made.id} in {tilde(made.path)}.")
+    print(f'Add a card with: lernt {made.id} --new "What is ...?"')
+    return 0
+
+
+def new_card(args):
+    """`--new`: write the card, open it to be written unless it came with an
+    answer, and say what the deck now thinks of its cards."""
+    engine = api.Engine()
+    try:
+        made = engine.card_create(
+            api.NewCardParams(
+                deck=args.deck or "",
+                title=args.new,
+                answer=args.answer,
+                time=args.card_time,
+                follows=args.follows,
+                draft=args.as_draft,
+            )
+        )
+    except api.ApiError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"Made the card {made.id} in {tilde(made.path)}.")
+    if not args.answer:
+        if not _interactive():
+            print("It has no answer yet: open it in an editor to write one.")
+            return 0
+        failed = run_editor(made.path)
+        if failed:
+            print(f"{failed}; the card is as it was made.")
+            return 1
+    problems = engine.deck_check(api.DeckParams(deck=args.deck)).problems
+    for problem in problems:
+        print(f"  {problem}")
+    return 1 if problems else 0
+
+
+def run_editor(path):
+    """The file in the user's editor. "" when it ran and exited cleanly, else
+    what went wrong, phrased to finish a sentence."""
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    try:
+        result = subprocess.run(
+            [*shlex.split(editor), str(path)], stdin=_child_stdin(), check=False
+        )
+    except OSError as exc:
+        return f"Could not run {editor!r}: {exc}"
+    if result.returncode != 0:
+        return f"{editor} exited with {result.returncode}"
+    return ""
+
+
 def edit_card(engine):
     """The card's file in the user's editor, then read back into the run. True
     only if the engine saw the file change."""
@@ -514,16 +631,8 @@ def edit_card(engine):
         print(f"{IND}{exc}")
         return False
 
-    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    try:
-        result = subprocess.run(
-            [*shlex.split(editor), str(path)], stdin=_child_stdin(), check=False
-        )
-    except OSError as exc:
-        print(f"{IND}Could not run {editor!r}: {exc}")
-        return False
-    if result.returncode != 0:
-        print(f"{IND}{editor} exited with {result.returncode}; taking no edit.")
+    if failed := run_editor(path):
+        print(f"{IND}{failed}; taking no edit.")
         return False
 
     reloaded = engine.card_reload(api.NoParams())
@@ -766,6 +875,19 @@ def limit_arg(text):
         seconds = -1
     if seconds < 0:
         raise argparse.ArgumentTypeError("takes seconds, off or auto")
+    return seconds
+
+
+def time_arg(text):
+    """--time: seconds, or "off" (0: untimed)."""
+    if text == "off":
+        return 0
+    try:
+        seconds = int(text)
+    except ValueError:
+        seconds = -1
+    if seconds < 0:
+        raise argparse.ArgumentTypeError("takes seconds or off")
     return seconds
 
 
