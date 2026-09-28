@@ -15,16 +15,16 @@ import datetime
 import time
 from dataclasses import dataclass, field
 
+from . import author, leitner
 from . import config as config_mod
 from . import deck as deck_mod
 from . import edits as edits_mod
-from . import leitner
 from . import misses as misses_mod
 from . import options as options_mod
 from .session import SCORES, Session, SessionError
 from .text import clean
 
-PROTOCOL = "lernt.api/6"
+PROTOCOL = "lernt.api/7"
 
 # Error codes, beside JSON-RPC's own negative ones. A frontend branches on the
 # code and shows the message.
@@ -335,6 +335,58 @@ class Settings:
 @dataclass
 class SaveSettingsParams:
     settings: list[Option]  # merged into what is saved; keys not sent are kept
+
+
+@dataclass
+class NewDeckParams:
+    name: str  # the deck's title; its id is made from it
+    description: str = ""
+
+
+@dataclass
+class NewDeck:
+    id: str
+    path: str
+
+
+@dataclass
+class NewCardParams:
+    deck: str
+    title: str  # the question; the card's id is made from it
+    answer: str = ""
+    notes: str = ""
+    reference: str = ""
+    time: int | None = None  # seconds of its own; 0: untimed; None: the run's
+    follows: list[str] = field(default_factory=list)  # ids of cards it leads to
+    draft: bool = False
+
+
+@dataclass
+class NewCard:
+    id: str
+    path: str  # the file written, for a frontend to open in an editor
+
+
+@dataclass
+class CardSummary:
+    id: str
+    title: str
+    draft: bool
+
+
+@dataclass
+class CardList:
+    deck: str
+    cards: list[CardSummary]
+
+
+@dataclass
+class Problems:
+    """What a deck's cards say is wrong with them: dangling follow-ups, times
+    that are not durations, an id two banks both hold."""
+
+    deck: str
+    problems: list[str]
 
 
 # -- the engine ------------------------------------------------------------
@@ -656,6 +708,63 @@ class Engine:
         return Settings(
             saved=_saved(options_mod.save(config_mod.settings_path(), values))
         )
+
+    # -- writing decks and cards -----------------------------------------------
+
+    @method("deck.create")
+    def deck_create(self, params: NewDeckParams) -> NewDeck:
+        """A new, empty deck in the decks directory, its cards beside its
+        `deck.toml`. Its id is made from its name, and an id in use is refused."""
+        try:
+            path = author.create_deck(
+                config_mod.decks_home(), params.name, params.description
+            )
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return NewDeck(id=path.name, path=str(path))
+
+    @method("card.create")
+    def card_create(self, params: NewCardParams) -> NewCard:
+        """A new card, written into the deck's first card bank. A follow-up has to
+        be a card the deck already has, so no link is left dangling by a typo."""
+        config, deck = open_deck(params.deck)
+        if not config.cards:
+            raise ApiError(INVALID, f"{config.name} has no card bank to write to.")
+        known = {card["id"]: card["title"] for card in deck["cards"]}
+        try:
+            card_id, path = author.create_card(
+                config.cards[0],
+                known,
+                params.title,
+                params.answer,
+                params.notes,
+                params.reference,
+                params.time,
+                params.follows,
+                params.draft,
+            )
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return NewCard(id=card_id, path=str(path))
+
+    @method("card.list")
+    def card_list(self, params: DeckParams) -> CardList:
+        """A deck's cards, for choosing what a new card should lead to."""
+        config, deck = open_deck(params.deck)
+        return CardList(
+            deck=config.id,
+            cards=[
+                CardSummary(id=c["id"], title=c["title"], draft=c["draft"])
+                for c in deck["cards"]
+            ],
+        )
+
+    @method("deck.check")
+    def deck_check(self, params: DeckParams) -> Problems:
+        """What is wrong with a deck's cards, as `lernt-deck --check` lists it. A
+        frontend runs it after an editor closes on a card it just made."""
+        config, deck = open_deck(params.deck)
+        return Problems(deck=config.id, problems=list(deck["problems"]))
 
     # -- helpers -----------------------------------------------------------
 
