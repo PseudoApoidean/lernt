@@ -38,18 +38,31 @@ a directory you copy anywhere. `examples/decks/` has one of each.
 
 ## Making a deck
 
-You do not have to write the files by hand. In the TUI, `N` on the deck list
-asks for a name and a line on what the deck is about, and makes the deck; `n`
-asks for a question, writes the card, and opens it in `$VISUAL` or `$EDITOR` to
-be written. From the terminal, `lernt --new-deck NAME` and
-`lernt DECK --new QUESTION` do the same (see Usage). When the editor closes, the
-deck is checked, and anything wrong with the card - a follow-up that points at
-no card, a time that is not a duration - is said straight away.
+You do not have to write the files by hand. The TUI's Library (`2`) lists the
+decks and the highlighted deck's questions across the top, and below them the card
+under the cursor whole: its question and the questions of the cards it follows
+from, its answer and notes, and where it leads. `n` makes a deck or a card and `e`
+edits one, in a form that takes the card's place below the lists: boxes for a
+deck's name and description, or a card's question, answer and notes; a column of
+the card's options (time, draft, and the cards it leads on to, which are ticked
+from the deck's own list above); and a column of actions (Save, Open in editor,
+Cancel). The arrow keys move between the views; `enter` starts typing in a box or
+selects an option, and `esc` comes back out. `enter` is a newline in every box. `d` deletes one after asking: it is
+moved to a `.trash`, not erased. `o` opens a card or a deck's `deck.toml` in
+`$VISUAL` or `$EDITOR` instead, for what a form does not say. When the editor
+closes on a card the deck is checked, and anything wrong with it - a follow-up that
+points at no card, a time that is not a duration - is said straight away.
 
-Both go through the engine (`deck.create`, `card.create`), which refuses a name
-already in use and a follow-up that is not a card the deck has, so neither
-overwrites work or leaves a dangling link. The card is written to the deck's
-first card directory.
+From the terminal, `lernt --new-deck NAME` and `lernt DECK --new QUESTION` do the
+same (see Usage).
+
+All of it goes through the engine (`deck.create`, `deck.update`, `card.create`,
+`card.update`), which refuses a name already in use and a follow-up that is not a
+card the deck has, so nothing is overwritten and no link is left dangling. A card
+is written to the deck's first card directory. Editing a card in a form writes it
+in the card format afresh, so what the format does not hold is not kept (an
+answer's callout becomes `tip`, a stray line under the rule is dropped); the
+editor is the way to change a card without that.
 
 ## Cards
 
@@ -159,18 +172,24 @@ no search - when both ends are a terminal, and prints the deck list otherwise.
 The deck list is where the mode is chosen, for every deck at once: `tab`
 switches between classic (the whole deck) and leitner (only the cards due
 today), and the TUI remembers it in `settings.json`. The highlighted deck shows
-beside the list: its description, its card count, what is on the miss list, its
-cards by Leitner box, and when it last ran. In leitner mode the list shows what
-each deck has due, and the highlighted deck says what is due today.
+beside the list its description, its card count and when it last ran, and then what
+belongs to the mode: in classic, what is on the miss list; in leitner, what is due
+today and its cards by Leitner box, and the list shows what each deck has due. The
+reports for the other mode still work by their keys.
 
-`N` and `n` on the deck list make a deck, and add a card to the highlighted one
-(see Making a deck).
+Three tabs run along the top, and `1`, `2` and `3` (or `[` and `]`) go between
+them: the deck list, the Library, where decks and cards are made, edited and
+deleted (see Making a deck), and the settings. The key bar at the bottom lists
+only the keys of the screen you are on, and of the mode in use.
 
-`s` on the deck list opens the settings screen, for what applies to lernt as a
-whole: the mode, and the number of cards and the seconds per answer that the
-options screen starts from for a deck that sets neither in its `deck.toml`. A
-change is saved as it is made, through the engine, so another frontend reads the
-same settings.
+The settings screen is for what applies to lernt as a whole, in three tabs. Decks: the
+mode, and the number of cards and the seconds per answer that the options screen starts
+from for a deck that sets neither in its `deck.toml`. Editing: Emoji codes, whether an emoji
+written in a card as a code (`&#x1f534;`) is turned into the character when the card is
+opened to be edited. Visual: the highlight colour, as a colour mode (one of the terminal's own 16 colours;
+one from a list of your own, each a colour in any form and a name; or one picked on a
+colour wheel) and the colour for that mode. A change is saved as it is made, through the engine, so another
+frontend reads the same settings.
 
 It runs the whole walk: choose a deck, set the run (cards, seconds, follow
 branches for me, drafts, only the miss list - classic only - edit mode, a

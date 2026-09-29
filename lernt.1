@@ -488,10 +488,25 @@ and
 .B card.create
 (write a new deck, or a card into a deck's first card directory, refusing a name
 or follow-up that would clash or dangle);
+.B deck.update
+and
+.B card.update
+(change a deck's name and description in its
+.BR deck.toml ,
+or write a card again from its parts under the id it has; the card format is
+written afresh, so an answer's callout becomes
+.B tip
+and a stray line under the rule is dropped);
 .B card.list
-(a deck's card ids and questions, for choosing follow-ups) and
+(each card whole: id, question, answer, notes, reference, time, follow-ups and file);
 .B deck.check
-(what is wrong with a deck's cards).
+(what is wrong with a deck's cards); and
+.B card.delete
+and
+.B deck.delete
+(move a card or a deck into a
+.B .trash
+beside it, never erasing it; a deck that is a symlink moves the link, and the cards it points at stay).
 There is one run at a time, and the card methods act on the card it is on.
 An error carries a code: 1 no such deck, 2 no cards matched, 3 nothing on the
 miss list, 4 not at this point in the run, 5 invalid values, 6 nothing due
@@ -518,12 +533,19 @@ option names to values. Delete it to go back to the deck's defaults.
 .TP
 .I ~/.local/state/lernt/settings.json
 The TUI's settings for lernt as a whole, in the same form: \fBmode\fR
-(\fBclassic\fR or \fBleitner\fR), and \fBcount\fR and \fBlimit\fR, the card
+(\fBclassic\fR or \fBleitner\fR), the highlight colour, as \fBcolour_mode\fR (\fBtheme\fR, \fBcustom\fR or \fBwheel\fR) and
+the colour for that mode: \fBcolour_theme\fR (the name of one of the terminal's 16 colours),
+\fBcolour_custom\fR (a JSON list of \fBname\fR and \fBvalue\fR, the value a hex colour or a
+number from 0 to 255) with \fBcolour_custom_choice\fR (the name chosen), and \fBcolour_wheel\fR
+(\fB#rrggbb\fR),
+\fBentities\fR (\fBon\fR or \fBoff\fR: whether
+numeric character references such as \fB&#x1f534;\fR in a card are turned into the
+characters when it is opened to be edited, so that it is saved with them), and
+\fBcount\fR and \fBlimit\fR, the card
 count and the seconds per answer that a deck starts from when its
 .B deck.toml
 sets none. They are changed on the TUI's settings screen, opened with
-.B s
-on the deck list, and read and written through the API as
+the Settings tab (\fB3\fR), and read and written through the API as
 .B settings.load
 and
 .BR settings.save .

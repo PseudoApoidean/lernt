@@ -20,12 +20,24 @@ var (
 	red    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	yellow = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	green  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+
+	// The cursor's row in a list: a bar across it. Bright in the pane that has
+	// the keys, dull in the one that does not.
+	barOn = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6")).Bold(true)
+	// The other pane's is only a tint, to say where the cursor is without
+	// competing with the pane that has the keys.
+	barOff = lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Light: "254", Dark: "238"})
+	// The text cursor in a form: the character it is on, reversed.
+	cursor = lipgloss.NewStyle().Reverse(true)
+	// A box that is being typed in, all of it: the same colours as a selected option.
+	boxOn = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
 )
 
 // A page is one screen laid out: the title bar, then either panes already
 // framed or one card whose body scrolls, then the footer and its key bar.
 type page struct {
 	context     string   // the title bar's right-hand label
+	tabbed      bool     // instead of the context, the tabs, this screen's lit
 	left, right string   // a line inside the title bar: the run's progress
 	panes       []string // framed cards, drawn as they are; none: the card below
 	title       string   // the card's title
@@ -36,10 +48,37 @@ type page struct {
 	keys        []string // the key bar: a key, what it does, a key, ...
 }
 
+// head is what the title bar carries on its right: the tabs on a tab screen,
+// else the page's context.
+func (p page) head(at screen) string {
+	switch {
+	case p.tabbed:
+		return tabBar(at)
+	case p.context != "":
+		return bold.Render(p.context)
+	}
+	return ""
+}
+
+// tabBar is the screens along the top, the one you are on lit, each with the
+// key that goes there:  1 Decks │ 2 Library │ 3 Settings
+func tabBar(at screen) string {
+	var parts []string
+	for i, t := range tabs {
+		label := strconv.Itoa(i+1) + " " + t.name
+		if t.screen == at {
+			parts = append(parts, accent.Render(label))
+		} else {
+			parts = append(parts, faint.Render(label))
+		}
+	}
+	return strings.Join(parts, faint.Render(" │ "))
+}
+
 func (m model) View() string {
 	p := m.page()
 	w := m.frameWidth()
-	lines := append(titleBar(p.context, p.left, p.right, w), "")
+	lines := append(titleBar(p.head(m.screen), p.left, p.right, w), "")
 	if p.panes != nil {
 		lines = append(lines, p.panes...)
 	} else {
@@ -59,7 +98,13 @@ func (m model) View() string {
 			lines = append(lines, indent+" "+line)
 		}
 	}
-	return strings.Join(append(lines, m.footer(p.keys)...), "\n")
+	foot := m.footer(p.keys)
+	// The footer is the last lines of the window: the page ends where it ends, and
+	// what is left over is between the two, not below the footer.
+	for len(lines)+len(foot) < m.height {
+		lines = append(lines, "")
+	}
+	return strings.Join(append(lines, foot...), "\n")
 }
 
 // room is how many body lines fit in the card, with everything else on the
@@ -68,17 +113,18 @@ func (m model) room(p page) int {
 	if m.height == 0 {
 		return 0
 	}
-	used := len(titleBar(p.context, p.left, p.right, m.frameWidth())) + 1 + 4 +
+	used := len(titleBar(p.head(m.screen), p.left, p.right, m.frameWidth())) + 1 + 4 +
 		len(p.pinned) + len(p.below) + 1 + len(m.footer(p.keys))
 	return max(m.height-used, 1)
 }
 
-// frameWidth is the width everything is drawn in: the window, up to a limit.
+// frameWidth is the width everything is drawn in: the whole window. A page that
+// reads better narrow (a question and its answer) sets its own width.
 func (m model) frameWidth() int {
 	if m.width == 0 {
 		return 80
 	}
-	return max(min(m.width, 100), 30)
+	return max(m.width, 30)
 }
 
 // cardWidth is a page's card: the full frame, or reading width when narrow.
@@ -116,27 +162,78 @@ func (m model) page() page {
 		return m.sourcesPage()
 	case settingsScreen:
 		return m.settingsPage()
+	case libraryScreen:
+		return m.libraryPage()
 	}
 	return m.decksPage()
 }
 
-// footer is the status, any error, the line being typed, and the key bar.
+// tmuxWarning is shown on the main screen under tmux. tmux does not say how it
+// draws emoji (it does not answer the query for grapheme clustering, mode 2027),
+// so the TUI counts them as wide as it can, and a line with one may still be a cell
+// out from the border at its end.
+const tmuxWarning = "In tmux, lines containing emoji may look misaligned."
+
+// footerLines is what the footer always takes: two lines for the status and two
+// for the key hints. The panes are sized around it, and it does not change with
+// what is in it, so nothing moves when a status comes and goes.
+const footerLines = 4
+
+// footer is the status, any error, the line being typed, and the key bar. Where the
+// height is known it is always footerLines long, whatever is in it: a status of more
+// than two lines is cut, and hints that fit on one line have a blank above them, so
+// the hints are always on the last line of the window and never jump.
 func (m model) footer(keys []string) []string {
 	w := m.frameWidth()
-	lines := []string{""}
+	var status []string
 	if m.status != "" {
-		lines = append(lines, " "+m.status)
+		status = append(status, " "+m.status)
 	}
 	if m.err != "" {
 		for _, line := range wrap(strings.Split(m.err, "\n"), w-2) {
-			lines = append(lines, " "+red.Render(line))
+			status = append(status, " "+red.Render(line))
 		}
 	}
+	if m.tmux && m.screen == decksScreen && len(status) < 2 {
+		// On the main screen only, and only while there is room: it is a note, and
+		// anything the screen has to say comes first.
+		status = append([]string{" " + yellow.Render("!") + faint.Render(" "+cut(tmuxWarning, w-4, "…"))}, status...)
+	}
 	if m.input != nil {
-		lines = append(lines, " "+bold.Render(m.input.prompt+": ")+string(m.input.text)+accent.Render("█"))
+		status = append(status, " "+bold.Render(m.input.prompt+": ")+string(m.input.text)+accent.Render("█"))
 		keys = []string{"enter", "save", "esc", "cancel"}
 	}
-	return append(lines, keyBar(keys, w)...)
+	if m.confirm != nil {
+		status = append(status, " "+bold.Render(m.confirm.prompt))
+		keys = []string{"y", "yes", "any other key", "keep it"}
+	}
+	bar := keyBar(keys, w)
+	if m.height == 0 {
+		return append(append([]string{""}, status...), bar...)
+	}
+	if len(status) > 2 {
+		status = append(status[:1], truncate(status[1], w-2)+faint.Render(" …"))
+	}
+	for len(status) < 2 {
+		status = append([]string{""}, status...)
+	}
+	for len(bar) < 2 {
+		bar = append([]string{""}, bar...)
+	}
+	return append(status, bar...)
+}
+
+// paneRows is how many lines a page's panes have between the title bar and the
+// footer, where the height is known.
+func (m model) paneRows() int { return max(m.height-3-footerLines, 0) }
+
+// fitRows is lines cut or padded to exactly n, so a pane is the size the window
+// gives it and not the size of what is in it.
+func fitRows(lines []string, n int) []string {
+	if len(lines) > n {
+		return lines[:n]
+	}
+	return append(lines, make([]string, n-len(lines))...)
 }
 
 // marker is the bar down the left of the row the cursor is on.
@@ -150,9 +247,7 @@ func marker(on bool) string {
 // -- choosing ----------------------------------------------------------------
 
 func (m model) decksPage() page {
-	p := page{title: "Decks", keys: []string{
-		"enter", "run", "tab", "mode", "n", "new card", "N", "new deck", "m", "misses", "b", "boxes", "e", "edits", "s", "settings",
-		"r", "refresh", "q", "quit"}}
+	p := page{title: "Decks", tabbed: true, keys: m.deckKeys()}
 	switch {
 	case m.decks == nil:
 		p.body = []string{"Loading decks..."}
@@ -161,11 +256,10 @@ func (m model) decksPage() page {
 		p.body = []string{
 			"No decks in " + tilde(m.decks.Home) + ".",
 			"",
-			"`lernt --list` says how to make one.",
+			"Press 2 for the Library, where n makes one.",
 		}
 		return p
 	}
-	p.context = plural(len(m.decks.Decks), "deck")
 
 	w := m.frameWidth()
 	// In Leitner mode each deck says what it has due, right-aligned.
@@ -212,13 +306,40 @@ func (m model) decksPage() page {
 	}
 	deck := m.decks.Decks[m.cursor]
 	detail := m.deckDetail(deck, detailW-4)
+	if m.height > 0 && listW != w {
+		// The panes are the size the window gives them, so they do not resize as
+		// the cursor moves between decks with more or less to say.
+		rows := max(m.paneRows()-4, 3)
+		list, detail = fitRows(scrolled(list, m.cursor, rows), rows), fitRows(detail, rows)
+	}
 	if listW == w {
 		p.panes = append(sideCard("Decks", mode, list, w), card(deckName(deck), detail, w)...)
 		return p
 	}
-	list, detail = even(list, detail)
+	if m.height == 0 {
+		list, detail = even(list, detail)
+	}
 	p.panes = join(sideCard("Decks", mode, list, listW), card(deckName(deck), detail, detailW))
 	return p
+}
+
+// deckKeys are the keys the deck list offers. The reports that belong to one
+// mode are listed only in it: the miss list drives classic runs, and the boxes
+// are what Leitner runs are made of. The keys still work in the other mode.
+// screenKeys is the hint that the tabs along the top can be reached by number: 1-3.
+func screenKeys() []string {
+	return []string{"1-" + strconv.Itoa(len(tabs)), "change screen"}
+}
+
+func (m model) deckKeys() []string {
+	keys := []string{"enter", "run", "tab", "mode"}
+	if m.mode == leitner {
+		keys = append(keys, "b", "boxes")
+	} else {
+		keys = append(keys, "m", "misses")
+	}
+	keys = append(keys, "e", "edits", "r", "refresh")
+	return append(append(keys, screenKeys()...), "q", "quit")
 }
 
 // modeSwitch is the mode as the deck list's edge shows it: both, the one in
@@ -278,20 +399,22 @@ func (m model) deckDetail(deck engine.DeckInfo, w int) []string {
 		return append(lines, faint.Render("Its cards will not load."))
 	}
 	lines = append(lines, plural(s.Size, "card"))
+	// What a deck says of itself is the mode's: in Leitner what is due and where the
+	// cards sit in the boxes, in classic the miss list that drives its runs. The
+	// reports for the other still work by their keys; they are not shown here.
 	if m.mode == leitner {
 		if s.Due > 0 {
 			lines = append(lines, accent.Render(strconv.Itoa(s.Due))+" due today")
 		} else {
 			lines = append(lines, faint.Render("nothing due today"))
 		}
-	}
-	if s.Missed > 0 {
+		lines = append(lines, "")
+		lines = append(lines, boxChart(*s, w)...)
+	} else if s.Missed > 0 {
 		lines = append(lines, yellow.Render(strconv.Itoa(s.Missed))+" on the miss list")
 	} else {
 		lines = append(lines, faint.Render("miss list clear"))
 	}
-	lines = append(lines, "")
-	lines = append(lines, boxChart(*s, w)...)
 	return append(lines, "", faint.Render(lastRun(s.LastRun, m.now())))
 }
 
@@ -436,46 +559,620 @@ func (m model) optionsPage() page {
 	return p
 }
 
-var prefLabels = [prefRows]string{"Mode", "Cards", "Seconds"}
+// prefLabelWidth is the label column of the settings: the longest label and two cells
+// of space before the value.
+const prefLabelWidth = 15
 
-// settingsPage is the settings for lernt as a whole: one card of wheels, and
-// what the focused one does under it.
+var prefLabels = [prefRows]string{
+	modeRow: "Mode", countPref: "Cards", limitPref: "Seconds", entitiesPref: "Emoji codes",
+	colourModePref: "Colour mode",
+}
+
+// colourLabel is what the colour row is called: it is a different setting in each mode.
+func (m model) colourLabel() string {
+	return []string{"Theme colour", "Custom colour", "Wheel colour"}[m.prefs.colourMode]
+}
+
+// arrowed is a value with an arrow to each side that it can turn, when it is selected.
+func arrowed(text string, left, right, selecting bool) string {
+	if !selecting {
+		return text
+	}
+	l, r := " ", " "
+	if left {
+		l = "‹"
+	}
+	if right {
+		r = "›"
+	}
+	return l + " " + text + " " + r
+}
+
+// colourValue is the colour row's value in the mode it is in, with a swatch of the
+// colour: for one of the terminal's, drawn by the terminal, as it looks in its theme.
+// Once the row is selected it is a bar of that very colour, so there is no swatch, and
+// nothing in it is styled: a styled part would end the bar where it ends.
+func (m model) colourValue(selecting bool) string {
+	p := m.prefs
+	swatchOf := func(value string) string {
+		if selecting {
+			return "  " // the room it takes, so the row does not move
+		}
+		return swatch(value)
+	}
+	switch p.colourMode {
+	case themeMode:
+		name := p.theme.label()
+		return arrowed(swatchOf(name)+" "+name, p.theme.at > 0, p.theme.at < len(p.theme.labels)-1, selecting)
+	case customMode:
+		if len(p.custom) == 0 {
+			return faint.Render("none yet")
+		}
+		c := p.custom[p.customAt]
+		value := "  " + c.Value
+		if !selecting {
+			value = faint.Render(value)
+		}
+		return arrowed(swatchOf(c.Value)+" "+c.Name+value, p.customAt > 0, p.customAt < len(p.custom)-1, selecting)
+	}
+	return swatchOf(p.picked) + " " + p.picked
+}
+
+// settingText is a settings row as text: its name and its value, or for an action just
+// what it does.
+func (m model) settingText(i int, selecting bool) string {
+	label := func(s string) string { return fit(s, prefLabelWidth) }
+	switch i {
+	case modeRow:
+		mode := wheel{labels: []string{classic, leitner}, values: []int{0, 1}}
+		mode.at = slices.Index(mode.labels, m.mode)
+		return label(prefLabels[i]) + wheelValue(mode, selecting)
+	case countPref:
+		return label(prefLabels[i]) + wheelValue(m.prefs.count, selecting)
+	case limitPref:
+		return label(prefLabels[i]) + wheelValue(m.prefs.limit, selecting)
+	case entitiesPref:
+		return label(prefLabels[i]) + wheelValue(m.prefs.entities, selecting)
+	case colourModePref:
+		modes := wheel{labels: colourModeNames, values: []int{0, 1, 2}, at: m.prefs.colourMode}
+		return label(prefLabels[i]) + wheelValue(modes, selecting)
+	case colourPref:
+		return label(m.colourLabel()) + m.colourValue(selecting)
+	case addColourPref:
+		return "Add a colour…"
+	}
+	return "Remove this colour"
+}
+
+// settingsPage is the settings for lernt as a whole, in tabs: how decks are run, how
+// cards are edited, how the TUI looks. One card of rows, the focused one explained
+// underneath. With the colour wheel open the card is the wheel.
 func (m model) settingsPage() page {
-	p := page{context: "settings", narrow: true, title: "Settings", keys: []string{
-		"↑↓", "choose", "←→", "change", "esc", "back"}}
-	mode := wheel{labels: []string{classic, leitner}, values: []int{0, 1}}
-	mode.at = slices.Index(mode.labels, m.mode)
-	wheels := [prefRows]wheel{modeRow: mode, countPref: m.prefs.count, limitPref: m.prefs.limit}
+	p := page{tabbed: true, narrow: true, title: "Settings", keys: []string{
+		"↑↓", "choose", "←→", "settings tab", "enter", "change", "esc", "back"}}
+	p.keys = append(p.keys, screenKeys()...)
+	if m.prefSelecting {
+		p.keys = []string{"←→", "change", "enter", "done"}
+	}
 
-	slot := 0
-	for _, w := range wheels {
-		for _, label := range w.labels {
-			slot = max(slot, cells(label))
+	var names []string
+	for i, name := range settingsTabs {
+		if i == m.prefTab {
+			names = append(names, accent.Render(name))
+		} else {
+			names = append(names, faint.Render(name))
 		}
 	}
-	for i, w := range wheels {
-		label := fit(prefLabels[i], labelWidth)
-		if i == m.pref {
-			label = bold.Render(label)
+	p.pinned = append(p.pinned, " "+strings.Join(names, faint.Render(" │ ")), "")
+
+	if m.form != nil { // adding a colour: a form in the card, like the library's
+		p.title = m.form.title
+		p.keys = formKeys(m.form)
+		p.pinned = m.formRegion(m.inner(true), 9) // in place of the tabs, which it is not one of
+		return p
+	}
+	if m.colourPick != nil {
+		p.keys = []string{"←→↑↓", "move", "tab", "hue or colour", ",.", "fine hue", "enter", "use it", "esc", "cancel"}
+		p.pinned = append(p.pinned, m.colourPick.lines(m.inner(true))...)
+		if !trueColour() {
+			p.body = wrap([]string{"This terminal does not say it draws 24-bit colour, so the colours here will be approximate."}, m.inner(true))
 		}
-		p.pinned = append(p.pinned, marker(i == m.pref)+label+w.render(i == m.pref, slot, 1))
+		return p
+	}
+
+	for _, i := range m.rowsOf(m.prefTab) {
+		focus := i == m.pref
+		selected := focus && m.prefSelecting
+		p.pinned = append(p.pinned, choiceRow(m.settingText(i, selected), m.inner(true), focus, selected))
 	}
 	p.pinned = append(p.pinned, "")
-	p.body = wrap([]string{prefHint(m.pref, m.mode)}, m.inner(true))
+	p.body = wrap([]string{m.prefHint()}, m.inner(true))
 	return p
 }
 
-// prefHint says what a setting does, at its current value where that matters.
-func prefHint(row int, mode string) string {
-	switch row {
+// prefHint says what the setting under the cursor does, at its current value where
+// that matters.
+func (m model) prefHint() string {
+	switch m.pref {
 	case countPref:
 		return "How many cards a run asks for, in a deck that does not set its own count. " +
-			"∞ runs until you stop it."
+			"\"∞\" runs until you stop it."
 	case limitPref:
 		return "Seconds for each answer, in a deck that does not set its own limit. " +
-			"auto gives each card its own time; off leaves the clock out."
+			"\"auto\" gives each card its own time; \"off\" leaves the clock out."
+	case entitiesPref:
+		return "An emoji in a card's file can be written as a code, such as \"&amp;#x1f534;\", which the " +
+			"card view shows as \"🔴\". When a card is opened to be edited, \"as characters\" turns each " +
+			"code into the character it stands for, so the card is saved with the characters. " +
+			"\"As written\" leaves the codes as they are in the file."
+	case colourModePref:
+		return "Where the highlight colour comes from: one of the terminal's own 16 colours, so " +
+			"that it follows the terminal's theme; one from a list of your own; or one picked on " +
+			"a colour wheel. The highlight is the lit titles, the bar on the row you are on, and " +
+			"the box being typed in."
+	case colourPref:
+		switch m.prefs.colourMode {
+		case themeMode:
+			return "One of the terminal's 16 colours. What each looks like is up to the terminal's " +
+				"theme, so the swatch is the real thing: pick by what you see, not by the name."
+		case customMode:
+			if len(m.prefs.custom) == 0 {
+				return "You have not added a colour yet, so the highlight is cyan until you do. " +
+					"The next row adds one."
+			}
+			return "One of the colours you added. To change one, remove it and add it again."
+		}
+		return "Enter opens the colour wheel. ↑↓←→ move in the square, tab moves along the hues, " +
+			", and . fine-tune the hue, shift with an arrow takes bigger steps. It looks best in a " +
+			"terminal that draws 24-bit colour."
+	case addColourPref:
+		return "Add a colour to your list: its value, in any form (hex like #ff8800, a number from " +
+			"0 to 255, or r,g,b like 255,136,0), and then a name for it."
+	case deleteColourPref:
+		return "Remove the colour showing from your list. A list is only added to and taken from."
 	}
-	return modeHint(mode) + " This applies to every deck. On the deck list, tab switches it."
+	return modeHint(m.mode) + " This applies to every deck. On the deck list, tab switches it."
+}
+
+// formKeys is the key bar of a form, by what the cursor is doing, or of the
+// picker when it is open.
+func formKeys(f *form) []string {
+	var keys []string
+	switch {
+	case f.picker != nil:
+		return []string{"↑↓", "choose", "space", "tick", "enter", "done", "esc", "cancel"}
+	case f.mode == typing:
+		keys = []string{"↑↓←→", "cursor", "enter", "new line", "esc", "done typing"}
+	case f.mode == selecting:
+		keys = []string{"←→", "change", "enter", "done"}
+	default:
+		keys = []string{"↑↓←→", "move", "enter", "select", "esc", "cancel"}
+	}
+	return append(keys, "ctrl+s", "save")
+}
+
+// formColumns splits a form w cells wide into its boxes, its options (a deck has
+// none) and its actions, with a rule between each.
+func formColumns(w int, options bool) (boxes, opts, acts int) {
+	acts = 17
+	if !options {
+		return w - acts - 3, 0, acts
+	}
+	opts = 22
+	return w - opts - acts - 6, opts, acts
+}
+
+// choiceRow is an option or an action as a row w cells wide. The three states of
+// it look alike and differ in how much of the row the cursor covers: none of it; a
+// block at each end when the cursor is on it; all of it once it is selected.
+func choiceRow(text string, w int, focused, selected bool) string {
+	inner := fit(" "+text, w-2)
+	switch {
+	case selected:
+		return barOn.Render(" " + inner + " ")
+	case focused:
+		return accent.Render("▌") + inner + accent.Render("▐")
+	}
+	return " " + inner + " "
+}
+
+// wheelValue is an option's value, with an arrow to each side that it can turn
+// when it is selected.
+func wheelValue(w wheel, selecting bool) string {
+	if !selecting {
+		return w.label()
+	}
+	l, r := " ", " "
+	if w.at > 0 {
+		l = "‹"
+	}
+	if w.at < len(w.labels)-1 {
+		r = "›"
+	}
+	return l + " " + w.label() + " " + r
+}
+
+// formRegion is a deck or a card being written, drawn where its detail is drawn:
+// the boxes on the left, one above the next; in the middle the card's options, the
+// things that are not text; and on the right the actions. The focused view is
+// explained underneath.
+func (m model) formRegion(w, d int) []string {
+	f := m.form
+	options := f.hasOptions()
+	lw, mw, rw := formColumns(w, options)
+	boxRows := f.boxRows(d)
+
+	var left []string
+	for i, fld := range f.fields {
+		if fld.kind != textField {
+			continue
+		}
+		focus, writing := i == f.at, i == f.at && f.mode == typing
+		label := faint.Render(fld.label)
+		if focus {
+			label = accent.Render(fld.label)
+		}
+		if fld.key == keyValue { // what the colour looks like, as it is typed
+			if normal, ok := normalColour(string(fld.text)); ok {
+				label += "  " + swatch(normal) + swatch(normal) + swatch(normal) + faint.Render(" "+normal)
+			}
+		}
+		left = append(left, label)
+		var fill *lipgloss.Style
+		if writing {
+			fill = &boxOn
+		}
+		for _, line := range areaLines(fld.text, fld.pos, lw-4, boxRows[i], writing, fill) {
+			switch {
+			case writing:
+				left = append(left, boxOn.Render("  ")+line+boxOn.Render("  "))
+			case focus:
+				left = append(left, accent.Render("▌")+" "+line+" "+accent.Render("▐"))
+			default:
+				left = append(left, faint.Render("│")+" "+line+"  ")
+			}
+		}
+	}
+
+	const labelW = 9
+	var mid, right []string
+	for i, fld := range f.fields {
+		focus := i == f.at
+		selected := focus && f.mode == selecting
+		switch fld.kind {
+		case wheelField:
+			mid = append(mid, choiceRow(fit(fld.label, labelW)+wheelValue(fld.wheel, selected), mw, focus, selected))
+		case linkField:
+			mid = append(mid, choiceRow(fit(fld.label, labelW)+linksLabel(len(fld.links), focus), mw, focus, false))
+		case buttonField:
+			right = append(right, choiceRow(fld.label, rw, focus, false))
+		}
+	}
+	if options {
+		mid = append([]string{faint.Render("Card options"), ""}, mid...)
+	}
+	right = append([]string{faint.Render("Actions"), ""}, right...)
+
+	rule := faint.Render(" │ ")
+	columns := [][]string{left}
+	widths := []int{lw}
+	if options {
+		columns, widths = append(columns, mid), append(widths, mw)
+	}
+	columns, widths = append(columns, right), append(widths, rw)
+	height := 0
+	for _, c := range columns {
+		height = max(height, len(c))
+	}
+	lines := make([]string, height)
+	for i := range height {
+		var parts []string
+		for c, col := range columns {
+			cell := ""
+			if i < len(col) {
+				cell = col[i]
+			}
+			parts = append(parts, fit(cell, widths[c]))
+		}
+		lines[i] = strings.Join(parts, rule)
+	}
+	lines = append(lines, "")
+	for _, line := range wrap([]string{f.fields[f.at].hint}, w) {
+		lines = append(lines, faint.Render(line))
+	}
+	return fitRows(lines, d)
+}
+
+// linksLabel is how many cards a card leads to, as the option shows it.
+func linksLabel(n int, focus bool) string {
+	text := "none ▸"
+	if n > 0 {
+		text = plural(n, "card") + " ▸"
+	}
+	return text
+}
+
+// linkTitles are the questions of the cards with these ids; one that is not in
+// the deck is shown by its id.
+func (m model) linkTitles(ids []string) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id
+		if m.library != nil {
+			if j := slices.IndexFunc(m.library.Cards, func(c engine.CardSummary) bool { return c.ID == id }); j >= 0 {
+				out[i] = oneLine([]string{m.library.Cards[j].Title})
+			}
+		}
+	}
+	return out
+}
+
+// deckByID is a deck from the list, by id.
+func (m model) deckByID(id string) (engine.DeckInfo, bool) {
+	if m.decks == nil {
+		return engine.DeckInfo{}, false
+	}
+	i := slices.IndexFunc(m.decks.Decks, func(d engine.DeckInfo) bool { return d.ID == id })
+	if i < 0 {
+		return engine.DeckInfo{}, false
+	}
+	return m.decks.Decks[i], true
+}
+
+// libraryPage is the library: the decks and the highlighted deck's questions side
+// by side, and below them the card under the cursor whole. That card is where it
+// is read and written: e turns it into a form in the same place, and the lists
+// above stay. A list that runs past its pane says so with an arrow.
+func (m model) libraryPage() page {
+	p := page{title: "Library", tabbed: true}
+	switch {
+	case m.form != nil:
+		p.keys = formKeys(m.form)
+	case m.libFocus == 0:
+		p.keys = []string{"↑↓", "choose", "→", "cards", "n", "new", "e", "edit", "o", "editor", "d", "delete"}
+	default:
+		p.keys = []string{"↑↓", "choose", "←", "decks", "n", "new", "e", "edit", "o", "editor", "d", "delete"}
+	}
+	if m.form == nil { // in a form the digits are text, not screens
+		p.keys = append(p.keys, screenKeys()...)
+	}
+	if m.decks == nil {
+		p.body = []string{"Loading decks..."}
+		return p
+	}
+	w := m.frameWidth()
+	rows, detailRows := m.librarySplit()
+	picking := m.form != nil && m.form.picker != nil
+	writing := m.form != nil && !picking
+
+	names := 0
+	for _, deck := range m.decks.Decks {
+		names = max(names, cells(deckName(deck)))
+	}
+	decksW := min(max(names+6, 20), 30)
+	cardsW := w - decksW - 1
+	stacked := w < 60
+	if stacked {
+		decksW, cardsW = w, w
+	}
+
+	var all []string
+	for i, deck := range m.decks.Decks {
+		all = append(all, listRow(truncate(deckName(deck), decksW-6), decksW-4,
+			i == m.libDeck, m.libFocus == 0 && m.form == nil, deck.Error != ""))
+	}
+	list := scrolled(all, m.libDeck, rows)
+	if len(list) == 0 {
+		list = []string{faint.Render("No decks. n makes one.")}
+	}
+
+	title, questions := "Cards", []string{}
+	if deck, ok := m.libraryDeck(); ok {
+		title = truncate(deckName(deck), cardsW-8)
+		questions = m.questionLines(cardsW-4, rows)
+	} else if m.libDeck < len(m.decks.Decks) {
+		questions = wrap([]string{m.decks.Decks[m.libDeck].Error}, cardsW-4)
+	}
+
+	// The pane that has the keys has its title lit.
+	decksTitle, cardsTitle, detailTitle := "Decks", title, "Card"
+	if m.form != nil {
+		detailTitle = m.form.title // the card being edited stays where it was
+	}
+	switch {
+	case picking:
+		cardsTitle = accent.Render(title + " · tick the cards it leads to")
+	case writing:
+		detailTitle = accent.Render(detailTitle)
+	case m.libFocus == 0:
+		decksTitle = accent.Render(decksTitle)
+	default:
+		cardsTitle = accent.Render(cardsTitle)
+	}
+
+	var detail []string
+	if m.form != nil {
+		detail = m.formRegion(w-4, detailRows)
+	} else {
+		detail = fitRows(m.cardDetail(w-4, detailRows), detailRows)
+	}
+
+	// Each pane is the size the window gives it, whatever is in it.
+	list, questions = fitRows(list, rows), fitRows(questions, rows)
+	if stacked {
+		p.panes = append(card(decksTitle, list, w), card(cardsTitle, questions, w)...)
+	} else {
+		p.panes = join(card(decksTitle, list, decksW), card(cardsTitle, questions, cardsW))
+	}
+	p.panes = append(p.panes, card(detailTitle, detail, w)...)
+	return p
+}
+
+// questionLines are the questions of the deck the library is on, one to a line.
+// A draft says so. With the picker open each has a box to tick, and the card
+// being edited, which cannot lead to itself, is marked instead.
+func (m model) questionLines(w, rows int) []string {
+	switch {
+	case m.library == nil:
+		return []string{faint.Render("Loading...")}
+	case len(m.library.Cards) == 0:
+		return []string{faint.Render("No cards yet. n writes one.")}
+	}
+	pk := (*picker)(nil)
+	if m.form != nil {
+		pk = m.form.picker
+	}
+	var all []string
+	cursorAt := m.libCard
+	for i, c := range m.library.Cards {
+		text := oneLine([]string{c.Title})
+		if c.Draft {
+			text = truncate(text, w-2-8) + " (draft)"
+		}
+		switch {
+		case pk != nil && i == pk.self:
+			all = append(all, "  "+faint.Render(truncate("    "+text+" (this card)", w-2)))
+		case pk != nil:
+			box := "[ ] "
+			if pk.chosen[c.ID] {
+				box = "[x] "
+			}
+			all = append(all, listRow(truncate(box+text, w-2), w, i == pk.at, true, false))
+		default:
+			all = append(all, listRow(truncate(text, w-2), w, i == m.libCard, m.libFocus == 1 && m.form == nil, false))
+		}
+	}
+	if pk != nil {
+		cursorAt = pk.at
+	}
+	return scrolled(all, cursorAt, rows)
+}
+
+// scrolled is rows of the lines of a list with the cursor in view, the first line
+// or the last given over to an arrow and a count where more lies beyond it.
+func scrolled(all []string, cursor, rows int) []string {
+	rows = max(rows, 3)
+	if len(all) <= rows {
+		return all
+	}
+	from := max(min(cursor-rows/2, len(all)-rows), 0)
+	out := slices.Clone(all[from : from+rows])
+	if from > 0 {
+		out[0] = faint.Render("  ▲ " + strconv.Itoa(from) + " more")
+	}
+	if below := len(all) - from - rows; below > 0 {
+		out[rows-1] = faint.Render("  ▼ " + strconv.Itoa(below) + " more")
+	}
+	return out
+}
+
+// oneLine is text of several lines on one, cleaned.
+func oneLine(lines []string) string {
+	return strings.Join(strings.Fields(clean(strings.Join(lines, " "))), " ")
+}
+
+// cardDetail is the card under the cursor whole: its question and the cards it
+// follows from, its answer, notes and reference, then where it leads and how it
+// is timed. Cut to most lines, with the cut marked.
+func (m model) cardDetail(w, most int) []string {
+	c, ok := m.libraryCard()
+	if !ok {
+		return []string{faint.Render("n writes a card.")}
+	}
+	lines := wrap([]string{"**" + c.Title + "**"}, w)
+	for i := range lines {
+		lines[i] = bold.Render(strings.ReplaceAll(lines[i], "**", ""))
+	}
+	for _, parent := range m.parentsOf(c) {
+		lines = append(lines, faint.Render(truncate("↳ follows "+oneLine([]string{parent.Title}), w)))
+	}
+	lines = append(lines, "")
+	if len(c.Answer) == 0 {
+		lines = append(lines, faint.Render("no answer yet"))
+	}
+	lines = append(lines, wrap(c.Answer, w)...)
+	if len(c.Notes) > 0 {
+		lines = append(lines, "", faint.Render("notes"))
+		lines = append(lines, wrap(c.Notes, w)...)
+	}
+	if len(c.Follows) > 0 {
+		lines = append(lines, "", faint.Render("leads to"))
+		for _, title := range m.linkTitles(c.Follows) {
+			lines = append(lines, truncate("→ "+title, w))
+		}
+	}
+	var facts []string
+	if c.Time != nil {
+		facts = append(facts, "time "+limitLabel(*c.Time))
+	}
+	if c.Draft {
+		facts = append(facts, "draft")
+	}
+	if c.Reference != "" {
+		facts = append(facts, "see "+clean(c.Reference))
+	}
+	if len(facts) > 0 {
+		lines = append(lines, "", faint.Render(truncate(strings.Join(facts, " · "), w)))
+	}
+	if len(lines) > most {
+		lines = append(lines[:most-1], faint.Render("…"))
+	}
+	return lines
+}
+
+// parentsOf are the cards of the deck that lead on to this one, whose questions
+// give it the context it is asked in.
+func (m model) parentsOf(c engine.CardSummary) []engine.CardSummary {
+	var out []engine.CardSummary
+	if m.library == nil {
+		return out
+	}
+	for _, other := range m.library.Cards {
+		if slices.Contains(other.Follows, c.ID) {
+			out = append(out, other)
+		}
+	}
+	return out
+}
+
+// listRow is one line of a list, w cells wide. The cursor's row is a bar; the
+// marker stays on it for a terminal with no colour to draw the bar in.
+func listRow(text string, w int, at, focused, dim bool) string {
+	if !at {
+		if dim {
+			return "  " + faint.Render(text)
+		}
+		return "  " + text
+	}
+	marker := "  "
+	style := barOff
+	if focused {
+		marker, style = "▌ ", barOn
+	}
+	return style.Render(fit(marker+text, w))
+}
+
+// librarySplit is how the window is shared between the lists across the top and
+// the card below them, each as a number of lines inside its frame. The card gets a
+// little over half, so a form has room for its boxes, and both grow with the
+// window. Where the height is not known, enough for a small deck.
+func (m model) librarySplit() (lists, card int) {
+	if m.height == 0 {
+		return 15, 17
+	}
+	avail := m.paneRows() - 8 // two frames
+	card = min(max(avail*11/20, 8), 40)
+	lists = avail - card
+	if lists < 4 {
+		lists, card = 4, max(avail-4, 5)
+	}
+	return lists, card
+}
+
+// libraryRows is how many lines the lists across the top have.
+func (m model) libraryRows() int {
+	lists, _ := m.librarySplit()
+	return lists
 }
 
 // shownSources is how many of a deck's card sources the options screen lists;

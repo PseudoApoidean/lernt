@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,6 +36,11 @@ type Engine interface {
 	CreateDeck(engine.NewDeckParams) (*engine.NewDeck, error)
 	CreateCard(engine.NewCardParams) (*engine.NewCard, error)
 	CheckDeck(engine.DeckParams) (*engine.Problems, error)
+	ListCards(engine.DeckParams) (*engine.CardList, error)
+	DeleteCard(engine.DeleteCardParams) (*engine.Trashed, error)
+	DeleteDeck(engine.DeleteDeckParams) (*engine.Trashed, error)
+	UpdateCard(engine.UpdateCardParams) (*engine.NewCard, error)
+	UpdateDeck(engine.UpdateDeckParams) (*engine.NewDeck, error)
 }
 
 type screen int
@@ -52,6 +58,7 @@ const (
 	editsScreen
 	sourcesScreen
 	settingsScreen
+	libraryScreen
 )
 
 // The run options, in the order the options screen lists them. The mode is not
@@ -149,40 +156,113 @@ const (
 	modeRow = iota
 	countPref
 	limitPref
+	entitiesPref
+	colourModePref   // where the highlight colour comes from
+	colourPref       // and which: of the theme's, of the list, or the wheel's
+	addColourPref    // add a colour to the list
+	deleteColourPref // take the one showing off it
 	prefRows
 )
 
-// prefs are the defaults the settings screen holds for the options screen.
-type prefs struct {
-	count wheel
-	limit wheel
+// The settings screen's tabs: how decks are run, how cards are edited, and how the TUI
+// looks. The arrows change tab when no row is selected. Each tab's rows are rowsOf.
+var settingsTabs = []string{"Decks", "Editing", "Visual"}
+
+// rowsOf are the rows of a settings tab. The Visual tab's depend on the colour mode:
+// the custom list can be added to, and taken from once it has something in it.
+func (m model) rowsOf(tab int) []int {
+	switch tab {
+	case 0:
+		return []int{modeRow, countPref, limitPref}
+	case 1:
+		return []int{entitiesPref}
+	}
+	rows := []int{colourModePref, colourPref}
+	if m.prefs.colourMode == customMode {
+		rows = append(rows, addColourPref)
+		if len(m.prefs.custom) > 0 {
+			rows = append(rows, deleteColourPref)
+		}
+	}
+	return rows
 }
+
+// prefs are the defaults the settings screen holds for the options screen, how a
+// card is opened for editing, and how the TUI looks.
+type prefs struct {
+	count    wheel
+	limit    wheel
+	entities wheel // as written, as characters: an emoji's code turned into the character
+
+	colourMode int            // themeMode, customMode or wheelMode
+	theme      wheel          // the terminal's 16 colours, for themeMode
+	custom     []customColour // the colours the user added, for customMode
+	customAt   int            // the one chosen
+	picked     string         // the colour picked on the wheel, for wheelMode, as #rrggbb
+}
+
+// defaultPickedColour is where the wheel starts before anything has been picked: a cyan
+// that is a place on the wheel exactly (full saturation, four fifths bright).
+const defaultPickedColour = "#00cccc"
 
 func defaultPrefs() prefs {
-	return prefs{count: countWheel(10), limit: limitWheel()}
+	p := prefs{count: countWheel(10), limit: limitWheel(), theme: themeWheel(),
+		entities: wheel{labels: []string{"as written", "as characters"}, values: []int{0, 1}},
+		picked:   defaultPickedColour}
+	p.entities.at = 1 // on, as the card view already shows them
+	return p
 }
 
+// decodeEntities is whether a card's character references, such as &#x1f534;, are
+// turned into the characters they stand for when the card is opened for editing.
+// The card is then saved with the characters.
+func (p prefs) decodeEntities() bool { return p.entities.value() == 1 }
+
 // The keys the settings screen is saved under, the same names and values the
-// options screen saves, so a setting reads like an option.
-var prefKeys = [prefRows]string{modeRow: modeKey, countPref: "count", limitPref: "limit"}
+// options screen saves, so a setting reads like an option. (The colour's are in
+// colourprefs.go.)
+var prefKeys = [prefRows]string{
+	modeRow: modeKey, countPref: "count", limitPref: "limit", entitiesPref: "entities",
+}
 
 func (p prefs) saved(mode string) []engine.Option {
-	return []engine.Option{
+	out := []engine.Option{
 		{Key: prefKeys[modeRow], Value: mode},
 		{Key: prefKeys[countPref], Value: countText(p.count.value())},
 		{Key: prefKeys[limitPref], Value: limitText(p.limit.value())},
+		{Key: prefKeys[entitiesPref], Value: map[bool]string{true: "on", false: "off"}[p.decodeEntities()]},
 	}
+	for _, kv := range p.colourSaved() {
+		out = append(out, engine.Option{Key: kv.Key, Value: kv.Value})
+	}
+	return out
 }
 
 // restore sets each default from what was saved, by key, passing over a key or
 // a value it does not know as options.restore does.
 func (p *prefs) restore(saved []engine.Option) {
+	// The list is read before the choice from it, whatever order they were saved in.
+	for _, s := range saved {
+		if s.Key == keyColourCustom {
+			p.restoreColours(s.Key, s.Value)
+		}
+	}
 	for _, s := range saved {
 		switch s.Key {
 		case prefKeys[countPref]:
 			p.count.setCount(s.Value)
 		case prefKeys[limitPref]:
 			p.limit.setLimit(s.Value)
+		case prefKeys[entitiesPref]:
+			switch strings.TrimSpace(s.Value) {
+			case "on", "true":
+				p.entities.at = 1
+			case "off", "false":
+				p.entities.at = 0
+			}
+		case keyColourCustom:
+		default:
+			p.restoreColours(s.Key, s.Value)
 		}
 	}
 }
@@ -324,12 +404,20 @@ type input struct {
 	kind   string
 	prompt string
 	text   []rune
-	carry  string // what an earlier prompt of the same task was answered
 }
 
 // authoring is a card just written by the engine and handed to the editor.
 type authoring struct {
 	deck, id, path string
+	verb           string // "Made" or "Edited"; id is "" when it is the deck's own file
+}
+
+// A confirm is a question the next key answers: y does it, anything else drops it.
+type confirm struct {
+	prompt string
+	deck   string
+	card   string // "": the deck itself
+	colour bool   // a colour of the custom list, not a deck or a card
 }
 
 // reply is an engine call's result arriving back in Update, typed by its value.
@@ -366,30 +454,41 @@ type model struct {
 	field         int    // the options screen
 	offset        int    // scroll, on screens that scroll
 	input         *input
-	authoring     *authoring // a new card open in the editor
-	newDeck       string     // a deck just made, for the list to put the cursor on
-	authorDeck    string     // the deck a new card is being asked for
+	authoring     *authoring // a card or deck file open in the editor
+	confirm       *confirm
+	libFocus      int // the library's pane: 0 the decks, 1 the cards
+	libDeck       int // the library's deck
+	libCard       int // the library's card
+	library       *engine.CardList
+	newDeck       string // a deck just made, for the list to put the cursor on
+	form          *form
+	saving        *saving // a form's save in flight
+	newCard       string  // a card just made or saved, for the list to put the cursor on
 
-	mode       string // classic or leitner, for every deck
-	prefs      prefs  // the settings screen's defaults for the options screen
-	pref       int    // the settings screen's row
-	decks      *engine.DeckList
-	opts       options
-	run        *engine.Started
-	card       engine.Question
-	asking     int // bumped per card, so an old card's tick stops
-	asked      time.Time
-	seconds    int
-	scored     *engine.Scored
-	moved      string // what the last score did to the card's Leitner box
-	standing   []engine.EditEntry
-	menu       []engine.MenuItem
-	summary    *engine.Summary
-	misses     *engine.MissReport
-	boxes      *engine.BoxReport
-	showAll    bool
-	reportDeck string
-	edits      *engine.EditReport
+	mode          string        // classic or leitner, for every deck
+	tmux          bool          // running inside tmux, which draws emoji differently
+	prefs         prefs         // the settings screen's defaults for the options screen
+	pref          int           // the settings screen's row
+	prefTab       int           // the settings screen's tab
+	colourPick    *colourPicker // the colour wheel, open
+	prefSelecting bool          // the row is selected: left and right change it
+	decks         *engine.DeckList
+	opts          options
+	run           *engine.Started
+	card          engine.Question
+	asking        int // bumped per card, so an old card's tick stops
+	asked         time.Time
+	seconds       int
+	scored        *engine.Scored
+	moved         string // what the last score did to the card's Leitner box
+	standing      []engine.EditEntry
+	menu          []engine.MenuItem
+	summary       *engine.Summary
+	misses        *engine.MissReport
+	boxes         *engine.BoxReport
+	showAll       bool
+	reportDeck    string
+	edits         *engine.EditReport
 }
 
 func newModel(eng Engine) model {
@@ -400,6 +499,7 @@ func newModel(eng Engine) model {
 		exec:  runEditor,
 		mode:  classic,
 		prefs: defaultPrefs(),
+		tmux:  os.Getenv("TMUX") != "",
 	}
 }
 
@@ -449,11 +549,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
+		if m.confirm != nil {
+			return m.confirming(msg.String())
+		}
 		if m.input != nil {
 			return m.typing(msg)
 		}
 		if m.screen == optionsScreen {
 			return m.optionsKey(msg)
+		}
+		if m.colourPick != nil { // the colour wheel is open: the keys are its own
+			return m.colourKey(msg.String())
+		}
+		if m.form != nil { // a card or deck being written, in the library, in place
+			return m.formKey(msg)
 		}
 		return m.key(msg.String())
 	}
@@ -482,25 +591,57 @@ func (m model) receive(r reply) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.prefs.restore(v.Saved)
+		applyTheme(m.prefs.highlight())
 		m.busy = true
 		return m, call(m.eng.Decks)
 	case *engine.DeckList:
 		m.decks = v
 		m.cursor = max(min(m.cursor, len(v.Decks)-1), 0)
 		if i := slices.IndexFunc(v.Decks, func(d engine.DeckInfo) bool { return d.ID == m.newDeck }); i >= 0 {
-			m.cursor = i
+			m.cursor, m.libDeck, m.libCard = i, i, 0
 		}
 		m.newDeck = ""
+		if m.screen == libraryScreen {
+			m.libDeck = max(min(m.libDeck, len(v.Decks)-1), 0)
+			return m, m.loadCards()
+		}
+	case *engine.CardList:
+		if deck, ok := m.libraryDeck(); ok && deck.ID == v.Deck && m.screen == libraryScreen {
+			m.library = v
+			m.libCard = max(min(m.libCard, len(v.Cards)-1), 0)
+			if i := slices.IndexFunc(v.Cards, func(c engine.CardSummary) bool { return c.ID == m.newCard }); i >= 0 {
+				m.libCard = i
+			}
+			m.newCard = ""
+		}
+	case *engine.Trashed:
+		m.status = "Moved " + v.ID + " to " + tilde(v.Trash) + "."
+		m.libCard, m.busy = max(m.libCard-1, 0), true
+		return m, call(m.eng.Decks)
 	case *engine.NewDeck:
-		m.status = "Made the deck " + v.ID + ". n adds a card to it."
-		m.newDeck, m.busy = v.ID, true
+		sv := m.saving
+		m.saving, m.form, m.screen, m.newDeck = nil, nil, libraryScreen, v.ID
+		m.status = sv.verb + " " + v.ID + "."
+		if sv.openAfter {
+			path := v.Path + "/deck.toml"
+			m.authoring, m.busy = &authoring{deck: v.ID, path: path, verb: "Edited"}, true
+			return m, m.exec(path)
+		}
+		m.busy = true
 		return m, call(m.eng.Decks)
 	case *engine.NewCard:
-		m.authoring = &authoring{deck: m.authorDeck, id: v.ID, path: v.Path}
+		sv := m.saving
+		deck := m.form.deck
+		m.saving, m.form, m.screen, m.newCard = nil, nil, libraryScreen, v.ID
+		m.status = sv.verb + " " + v.ID + "."
+		if sv.openAfter {
+			m.authoring, m.busy = &authoring{deck: deck, id: v.ID, path: v.Path, verb: "Edited"}, true
+			return m, m.exec(v.Path)
+		}
 		m.busy = true
-		return m, m.exec(v.Path)
+		return m, call(m.eng.Decks)
 	case *engine.Problems:
-		m.status = "Made the card " + m.authoring.id + "."
+		m.status = m.authoring.verb + " the card " + m.authoring.id + "."
 		if n := len(v.Problems); n > 0 {
 			m.status += " " + plural(n, "problem") + ": " + v.Problems[0]
 		}
@@ -596,9 +737,14 @@ func (m model) end() (tea.Model, tea.Cmd) {
 // -- keys --------------------------------------------------------------------
 
 func (m model) key(k string) (tea.Model, tea.Cmd) {
+	if to, ok := m.tabFor(k); ok {
+		return m.goTab(to)
+	}
 	switch m.screen {
 	case decksScreen:
 		return m.decksKey(k)
+	case libraryScreen:
+		return m.libraryKey(k)
 	case askScreen:
 		switch k {
 		case "enter", " ":
@@ -690,22 +836,6 @@ func (m model) decksKey(k string) (tea.Model, tea.Cmd) {
 		m.mode = map[string]string{classic: leitner, leitner: classic}[m.mode]
 		m.status = modeHint(m.mode)
 		return m, m.saveSettings()
-	case "s":
-		m.show(settingsScreen)
-		m.pref = modeRow
-		return m, nil
-	case "N":
-		m.input = &input{kind: "deck-name", prompt: "New deck's name"}
-		return m, nil
-	case "n":
-		deck, ok := m.selected()
-		if !ok {
-			m.status = "Choose a deck to add the card to, or N makes a new one."
-			return m, nil
-		}
-		m.authorDeck = deck.ID
-		m.input = &input{kind: "card", prompt: "New card's question"}
-		return m, nil
 	case "enter", "m", "b", "e":
 		deck, ok := m.selected()
 		if !ok {
@@ -732,6 +862,240 @@ func (m model) decksKey(k string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// The screens along the top, in order. Each is a place of its own, apart from
+// the keys the screen you are on offers.
+var tabs = []struct {
+	screen screen
+	name   string
+}{{decksScreen, "Decks"}, {libraryScreen, "Library"}, {settingsScreen, "Settings"}}
+
+func tabIndex(s screen) int {
+	return slices.IndexFunc(tabs, func(t struct {
+		screen screen
+		name   string
+	}) bool {
+		return t.screen == s
+	})
+}
+
+// tabFor is the screen a key switches to from the tab screen you are on: 1-3
+// for each, and [ and ] for the one before and after.
+func (m model) tabFor(k string) (screen, bool) {
+	at := tabIndex(m.screen)
+	if at < 0 {
+		return 0, false
+	}
+	switch k {
+	case "[":
+		return tabs[max(at-1, 0)].screen, true
+	case "]":
+		return tabs[min(at+1, len(tabs)-1)].screen, true
+	}
+	if n, err := strconv.Atoi(k); err == nil && n >= 1 && n <= len(tabs) {
+		return tabs[n-1].screen, true
+	}
+	return 0, false
+}
+
+// sel is the deck the tab screens share: the one you had highlighted when you
+// left the last of them.
+func (m model) sel() int {
+	switch m.screen {
+	case decksScreen:
+		return m.cursor
+	case libraryScreen:
+		return m.libDeck
+	}
+	return m.deckCursor
+}
+
+// goTab switches to another tab screen, keeping the highlighted deck.
+func (m model) goTab(to screen) (tea.Model, tea.Cmd) {
+	if to == m.screen {
+		return m, nil
+	}
+	sel := m.sel()
+	m.deckCursor = sel
+	m.show(to)
+	m.err = ""
+	switch to {
+	case decksScreen:
+		m.cursor, m.busy = sel, true
+		return m, call(m.eng.Decks) // what the library did shows in the counts
+	case libraryScreen:
+		m.libDeck, m.libCard, m.libFocus, m.library = sel, 0, 0, nil
+		return m, m.loadCards()
+	case settingsScreen:
+		m.pref, m.prefTab, m.prefSelecting = modeRow, 0, false
+	}
+	return m, nil
+}
+
+// -- the library --------------------------------------------------------------
+
+// libraryDeck is the deck the library's cursor is on, and whether it loaded.
+func (m model) libraryDeck() (engine.DeckInfo, bool) {
+	if m.decks == nil || m.libDeck >= len(m.decks.Decks) {
+		return engine.DeckInfo{}, false
+	}
+	deck := m.decks.Decks[m.libDeck]
+	return deck, deck.Error == ""
+}
+
+// loadCards asks for the cards of the deck the library is on. A deck that will
+// not load has none to list, and the page says why.
+func (m model) loadCards() tea.Cmd {
+	deck, ok := m.libraryDeck()
+	if !ok {
+		return nil
+	}
+	p := engine.DeckParams{Deck: deck.ID}
+	return call(func() (*engine.CardList, error) { return m.eng.ListCards(p) })
+}
+
+// libraryCard is the card the library's cursor is on.
+func (m model) libraryCard() (engine.CardSummary, bool) {
+	if m.library == nil || m.libCard >= len(m.library.Cards) {
+		return engine.CardSummary{}, false
+	}
+	return m.library.Cards[m.libCard], true
+}
+
+// libraryKey is the library: decks on the left, the highlighted deck's cards on
+// the right, and n, e and d act on whichever pane you are in.
+func (m model) libraryKey(k string) (tea.Model, tea.Cmd) {
+	if m.libFocus == 0 {
+		return m.libraryDecksKey(k)
+	}
+	return m.libraryCardsKey(k)
+}
+
+func (m model) libraryDecksKey(k string) (tea.Model, tea.Cmd) {
+	_, ok := m.libraryDeck()
+	switch k {
+	case "esc", "q":
+		return m.goTab(decksScreen)
+	case "up", "k", "down", "j":
+		if m.decks != nil {
+			step := -1
+			if k == "down" || k == "j" {
+				step = 1
+			}
+			m.libDeck = max(min(m.libDeck+step, len(m.decks.Decks)-1), 0)
+			m.libCard, m.library = 0, nil
+			return m, m.loadCards()
+		}
+	case "right", "l", "enter":
+		if ok {
+			m.libFocus = 1
+		}
+	case "n":
+		m = m.openForm(newDeckForm())
+	case "e":
+		if m.decks != nil && m.libDeck < len(m.decks.Decks) {
+			deck := m.decks.Decks[m.libDeck]
+			if deck.Error != "" {
+				m.status = "That deck will not load: o opens its deck.toml in the editor."
+				return m, nil
+			}
+			m = m.openForm(editDeckForm(deck, m.prefs.decodeEntities()))
+		}
+	case "o":
+		if m.decks != nil && m.libDeck < len(m.decks.Decks) {
+			deck := m.decks.Decks[m.libDeck]
+			if deck.Path == nil {
+				return m, nil
+			}
+			path := *deck.Path + "/deck.toml"
+			m.authoring = &authoring{deck: deck.ID, path: path, verb: "Edited"}
+			m.busy = true
+			return m, m.exec(path)
+		}
+	case "d":
+		if m.decks != nil && m.libDeck < len(m.decks.Decks) {
+			deck := m.decks.Decks[m.libDeck]
+			m.confirm = &confirm{deck: deck.ID, prompt: deckDeletion(deck)}
+		}
+	}
+	return m, nil
+}
+
+func (m model) libraryCardsKey(k string) (tea.Model, tea.Cmd) {
+	deck, _ := m.libraryDeck()
+	card, have := m.libraryCard()
+	switch k {
+	case "esc", "q", "left", "h":
+		m.libFocus = 0
+	case "up", "k":
+		m.libCard = max(m.libCard-1, 0)
+	case "down", "j":
+		if m.library != nil {
+			m.libCard = max(min(m.libCard+1, len(m.library.Cards)-1), 0)
+		}
+	case "home", "g":
+		m.libCard = 0
+	case "end", "G":
+		if m.library != nil {
+			m.libCard = max(len(m.library.Cards)-1, 0)
+		}
+	case "n":
+		m = m.openForm(newCardForm(deck.ID))
+	case "e", "enter":
+		if have {
+			m = m.openForm(editCardForm(deck.ID, card, m.prefs.decodeEntities()))
+		}
+	case "o":
+		if have {
+			m.authoring = &authoring{deck: deck.ID, id: card.ID, path: card.Path, verb: "Edited"}
+			m.busy = true
+			return m, m.exec(card.Path)
+		}
+	case "d":
+		if have {
+			m.confirm = &confirm{deck: deck.ID, card: card.ID, prompt: "Move the card " + card.ID + " to .trash?"}
+		}
+	}
+	return m, nil
+}
+
+// deckDeletion is the question asked before a deck is deleted, saying what
+// goes with it: a deck's own folder takes the cards inside it, while the cards
+// of a linked deck, or one that names a bank elsewhere, stay where they are.
+func deckDeletion(deck engine.DeckInfo) string {
+	q := "Move the deck " + deck.ID + " to .trash? "
+	if deck.CardsInside {
+		return q + "Its cards are inside it, so they go too."
+	}
+	return q + "Its cards are kept elsewhere and stay there."
+}
+
+// confirming is the key that answers a confirm: y does it, any other drops it.
+func (m model) confirming(k string) (tea.Model, tea.Cmd) {
+	c := m.confirm
+	m.confirm = nil
+	if k != "y" && k != "Y" {
+		m.status = "Kept."
+		return m, nil
+	}
+	if c.colour {
+		m.prefs.deleteCustom()
+		applyTheme(m.prefs.highlight())
+		m.status = "Removed it from the list."
+		if m.pref == deleteColourPref && len(m.prefs.custom) == 0 {
+			m.pref = colourPref // the row it was on is gone with the last colour
+		}
+		return m, m.saveSettings()
+	}
+	m.busy = true
+	if c.card != "" {
+		p := engine.DeleteCardParams{Deck: c.deck, Card: c.card}
+		return m, call(func() (*engine.Trashed, error) { return m.eng.DeleteCard(p) })
+	}
+	m.libFocus = 0
+	p := engine.DeleteDeckParams{Deck: c.deck}
+	return m, call(func() (*engine.Trashed, error) { return m.eng.DeleteDeck(p) })
+}
+
 // saveSettings remembers the settings. Remembering is a convenience: a failed
 // save is dropped, as an option's is, and nothing waits on it.
 func (m model) saveSettings() tea.Cmd {
@@ -745,22 +1109,48 @@ func (m model) saveSettings() tea.Cmd {
 // settingsKey turns the settings screen's rows. Each change is saved as it is
 // made, so leaving is just going back to the decks, on the deck you left.
 func (m model) settingsKey(k string) (tea.Model, tea.Cmd) {
+	// The arrow keys move between rows and tabs, so a row has to be entered to be
+	// changed: enter selects it, left and right turn it, and enter or esc lets go.
+	if !m.prefSelecting {
+		rows := m.rowsOf(m.prefTab)
+		at := slices.Index(rows, m.pref)
+		if at < 0 { // the row it was on has gone: the colour list lost its last colour
+			m.pref, at = rows[0], 0
+		}
+		switch k {
+		case "esc", "q":
+			return m.goTab(decksScreen)
+		case "up", "k", "shift+tab":
+			m.pref = rows[max(at-1, 0)]
+		case "down", "j", "tab":
+			m.pref = rows[min(at+1, len(rows)-1)]
+		case "left", "h":
+			m.prefTab = max(m.prefTab-1, 0)
+			m.pref = m.rowsOf(m.prefTab)[0]
+		case "right", "l":
+			m.prefTab = min(m.prefTab+1, len(settingsTabs)-1)
+			m.pref = m.rowsOf(m.prefTab)[0]
+		case "enter":
+			return m.enterRow()
+		}
+		return m, nil
+	}
 	turn := 0
 	switch k {
-	case "esc", "q":
-		return m.backToDecks()
-	case "up", "k", "shift+tab":
-		m.pref = max(m.pref-1, 0)
-	case "down", "j", "tab":
-		m.pref = min(m.pref+1, prefRows-1)
+	case "enter", "esc":
+		m.prefSelecting = false
+		return m, nil
+	case "tab", "shift+tab":
+		m.prefSelecting = false
+		return m.settingsKey(k)
 	case "left", "h", "-":
 		turn = -1
 	case "right", "l", "+":
 		turn = 1
 	case " ":
 		turn = 1
-		if m.pref == modeRow && m.mode == leitner {
-			turn = -1 // the mode is two values, so space flips it
+		if (m.pref == modeRow && m.mode == leitner) || (m.pref == entitiesPref && m.prefs.decodeEntities()) {
+			turn = -1 // the mode and the entities are two values, so space flips them
 		}
 	}
 	if turn == 0 {
@@ -773,8 +1163,91 @@ func (m model) settingsKey(k string) (tea.Model, tea.Cmd) {
 		m.prefs.count.turn(turn)
 	case limitPref:
 		m.prefs.limit.turn(turn)
+	case entitiesPref:
+		m.prefs.entities.turn(turn)
+	case colourModePref:
+		m.prefs.colourMode = max(min(m.prefs.colourMode+turn, len(colourModeNames)-1), 0)
+		applyTheme(m.prefs.highlight())
+	case colourPref:
+		switch m.prefs.colourMode {
+		case themeMode:
+			m.prefs.theme.turn(turn)
+		case customMode:
+			m.prefs.customAt = max(min(m.prefs.customAt+turn, len(m.prefs.custom)-1), 0)
+		}
+		applyTheme(m.prefs.highlight())
 	}
 	return m, m.saveSettings()
+}
+
+// enterRow is enter on a row when none is selected: most are selected, to be turned;
+// the colour wheel opens; adding a colour asks for it; removing one asks first.
+func (m model) enterRow() (tea.Model, tea.Cmd) {
+	switch m.pref {
+	case colourPref:
+		switch m.prefs.colourMode {
+		case wheelMode:
+			m.colourPick = newColourPicker(m.prefs.picked)
+			return m, nil
+		case customMode:
+			if len(m.prefs.custom) == 0 {
+				m.status = "No colours yet: add one with the row below."
+				return m, nil
+			}
+		}
+	case addColourPref:
+		m = m.openForm(newColourForm())
+		return m, nil
+	case deleteColourPref:
+		if len(m.prefs.custom) > 0 {
+			m.confirm = &confirm{colour: true, prompt: "Remove " + m.prefs.custom[m.prefs.customAt].Name + " from your colours?"}
+		}
+		return m, nil
+	}
+	m.prefSelecting = true
+	return m, nil
+}
+
+// colourKey is the colour wheel: the arrows move in the square, or along the strip of
+// hues; enter takes the colour, and esc puts back the one that was there.
+func (m model) colourKey(k string) (tea.Model, tea.Cmd) {
+	c := m.colourPick
+	switch k {
+	case "esc", "q":
+		m.colourPick = nil
+		applyTheme(m.prefs.highlight())
+		return m, nil
+	case "enter":
+		m.prefs.picked = c.hex()
+		m.colourPick = nil
+		applyTheme(m.prefs.highlight())
+		m.status = "Colour " + m.prefs.picked + "."
+		return m, m.saveSettings()
+	case "tab", "shift+tab":
+		c.strip = !c.strip
+	case "left", "h":
+		c.move(-1, 0)
+	case "right", "l":
+		c.move(1, 0)
+	case "up", "k":
+		c.move(0, -1)
+	case "down", "j":
+		c.move(0, 1)
+	case "shift+left", "H":
+		c.move(-4, 0)
+	case "shift+right", "L":
+		c.move(4, 0)
+	case "shift+up", "K":
+		c.move(0, -3)
+	case "shift+down", "J":
+		c.move(0, 3)
+	case ",":
+		c.turn(-1)
+	case ".":
+		c.turn(1)
+	}
+	applyTheme(c.hex()) // the highlight is the colour under the cursor, live
+	return m, nil
 }
 
 // authored is the editor closing on a card the engine has just written. The
@@ -784,10 +1257,15 @@ func (m model) authored(err error) (tea.Model, tea.Cmd) {
 	a := m.authoring
 	if err != nil {
 		m.authoring, m.busy = nil, true
-		m.status = "The editor failed (" + err.Error() + "); the card is at " + tilde(a.path) + "."
+		m.status = "The editor failed (" + err.Error() + "); the file is at " + tilde(a.path) + "."
 		return m, call(m.eng.Decks)
 	}
 	m.busy = true
+	if a.id == "" { // the deck's own file: a bad one shows on the deck list
+		m.authoring = nil
+		m.status = a.verb + " " + tilde(a.path) + "."
+		return m, call(m.eng.Decks)
+	}
 	p := engine.DeckParams{Deck: a.deck}
 	return m, call(func() (*engine.Problems, error) { return m.eng.CheckDeck(p) })
 }
@@ -963,24 +1441,6 @@ func (m model) typing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, call(func() (*engine.Standing, error) {
 				return m.eng.Flag(engine.FlagParams{Reason: text})
 			})
-		case "deck-name":
-			if strings.TrimSpace(text) == "" {
-				m.input = in // a deck needs a name: keep asking
-				return m, nil
-			}
-			m.input = &input{kind: "deck-about", prompt: "What it is about (optional)", carry: text}
-		case "deck-about":
-			p := engine.NewDeckParams{Name: in.carry, Description: text}
-			m.busy = true
-			return m, call(func() (*engine.NewDeck, error) { return m.eng.CreateDeck(p) })
-		case "card":
-			if strings.TrimSpace(text) == "" {
-				m.input = in // a card needs a question: keep asking
-				return m, nil
-			}
-			p := engine.NewCardParams{Deck: m.authorDeck, Title: text}
-			m.busy = true
-			return m, call(func() (*engine.NewCard, error) { return m.eng.CreateCard(p) })
 		}
 	case tea.KeyBackspace:
 		if len(in.text) > 0 {

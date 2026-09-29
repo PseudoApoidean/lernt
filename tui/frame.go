@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // The pieces every screen is built from: a title bar across the top, rounded
@@ -18,12 +17,10 @@ var (
 	side     = edge.Render("│")
 )
 
-func cells(s string) int { return lipgloss.Width(s) }
-
 // fit cuts or pads s to exactly w cells.
 func fit(s string, w int) string {
 	if cells(s) > w {
-		s = ansi.Truncate(s, max(w, 1), "…")
+		s = cut(s, max(w, 1), "…")
 	}
 	return s + strings.Repeat(" ", max(w-cells(s), 0))
 }
@@ -74,10 +71,11 @@ func sideCard(title, right string, lines []string, w int) []string {
 }
 
 // titleBar is the frame across the top of every screen: lernt, the context on
-// the right, and on a run a line inside it with left and right halves.
+// the right (already styled), and on a run a line inside it with left and right
+// halves.
 func titleBar(context, left, right string, w int) []string {
 	if context != "" {
-		context = bold.Render(truncate(context, w-14))
+		context = truncate(context, w-14)
 	}
 	out := []string{topEdge(accent.Render("lernt"), context, w)}
 	if left != "" || right != "" {
