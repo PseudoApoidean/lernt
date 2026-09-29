@@ -7,9 +7,15 @@ is written is what `lernt-deck --check` reads back.
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 from . import config as config_mod
+
+# Where a deleted card or deck goes, beside where it was. A name that starts
+# with a dot is skipped by the card banks and by the decks directory alike, so
+# what is in here is out of every deck and still there to move back.
+TRASH = ".trash"
 
 # What a filename cannot hold, and what would turn a card id into a link
 # (`[[Some card]]`) or a tag when it is written into one.
@@ -19,6 +25,13 @@ MAX_ID = 80
 
 class AuthorError(Exception):
     """Phrased for the user; the API turns it into an invalid-call error."""
+
+
+def one_line(text):
+    """Text as the one line a field of the file holds: a box in a frontend can
+    hold a newline, and a newline in the reference, or in a deck's name, would
+    break the file's format."""
+    return " ".join(text.split())
 
 
 def deck_id(name):
@@ -31,7 +44,7 @@ def deck_id(name):
 def create_deck(home, name, description=""):
     """A new deck directory in `home`, its cards beside its deck.toml. Returns
     the directory. A deck that is already there is never overwritten."""
-    name = name.strip()
+    name = one_line(name)
     slug = deck_id(name)
     if not slug:
         raise AuthorError("A deck needs a name.")
@@ -95,7 +108,7 @@ def create_card(
     return stem, path
 
 
-def render_card(title, answer, notes, reference, time, follows, titles, draft):
+def render_card(title, answer, notes, reference, time, follows, titles, draft, tags=()):
     """The card as Markdown. `titles` maps a card id to its question, for the
     text of a follow-up link."""
     out = [f"# {title}", "", "> [!tip]"]
@@ -103,8 +116,8 @@ def render_card(title, answer, notes, reference, time, follows, titles, draft):
     if notes.strip():
         out += ["", *notes.strip().splitlines()]
     meta = []
-    if reference.strip():
-        meta.append(f"**Reference:** {reference.strip()}")
+    if one_line(reference):
+        meta.append(f"**Reference:** {one_line(reference)}")
     if time is not None:
         meta.append(f"**Time:** {time}s" if time else "**Time:** off")
     if follows:
@@ -113,13 +126,14 @@ def render_card(title, answer, notes, reference, time, follows, titles, draft):
             label = titles.get(target, target)
             link = f"[[{target}]]" if label == target else f"[[{target}|{label}]]"
             meta.append(f"{n}. {link}")
-    # Tags are only read below the rule, so a draft needs one even alone.
-    if meta or draft:
+    # Tags are only read below the rule, so a tag needs one even alone.
+    tagged = [t for t in tags if t != "draft"] + (["draft"] if draft else [])
+    if meta or tagged:
         out += ["", "---"]
     if meta:
         out += ["", *meta]
-    if draft:
-        out += ["", "#draft"]
+    if tagged:
+        out += ["", " ".join(f"#{t}" for t in tagged)]
     return "\n".join(out) + "\n"
 
 
@@ -127,3 +141,105 @@ def _string(text):
     """A TOML basic string. JSON's escapes are a subset of TOML's, and the only
     characters either needs escaped are the quote, the backslash and controls."""
     return json.dumps(text, ensure_ascii=False)
+
+
+def trash(path):
+    """Move a file or directory - or a symlink itself, never what it points at -
+    into a `.trash` beside it, under a name nothing there has. Returns where it
+    went. Nothing is erased: putting it back is moving it back."""
+    path = Path(path)
+    if not (path.exists() or path.is_symlink()):
+        raise AuthorError(f"Cannot find {path}.")
+    bin_ = path.parent / TRASH
+    bin_.mkdir(exist_ok=True)
+    target = bin_ / path.name
+    n = 1
+    while target.exists() or target.is_symlink():
+        n += 1
+        target = bin_ / f"{path.stem}-{n}{path.suffix}"
+    path.rename(target)
+    return target
+
+
+def update_card(
+    path,
+    known,
+    own_id,
+    title,
+    answer="",
+    notes="",
+    reference="",
+    time=None,
+    follows=(),
+    draft=False,
+    tags=(),
+):
+    """A card's file written again from its parts, under the id it already has:
+    the id is the filename, and other cards' links and the attempt log name it,
+    so a new question does not rename it. `known` is as in `create_card`.
+
+    This writes the card format afresh, so what the format does not hold is not
+    kept: an answer's callout becomes `tip`, and a line under the rule that is
+    not a reference, time, follow-up or tag is dropped. The editor is the way to
+    change a card without that."""
+    title = " ".join(title.split())
+    if not title:
+        raise AuthorError("A card needs a question.")
+    missing = [t for t in follows if t not in known or t == own_id]
+    if missing:
+        raise AuthorError("No such card to follow up with: " + ", ".join(missing))
+    if time is not None and time < 0:
+        raise AuthorError("A card's time is in seconds (0 = untimed).")
+    path = Path(path)
+    if not path.is_file():
+        raise AuthorError(f"Cannot find the card at {path}.")
+    path.write_text(
+        render_card(title, answer, notes, reference, time, follows, known, draft, tags),
+        encoding="utf-8",
+    )
+    return path
+
+
+def update_deck(directory, name, description=""):
+    """A deck's name and description changed in its deck.toml, and nothing else:
+    the other keys and the file's order stay, though a comment on the two lines
+    changed does not. An empty description removes the line."""
+    name = one_line(name)
+    if not name:
+        raise AuthorError("A deck needs a name.")
+    file = Path(directory) / config_mod.DECK_FILE
+    lines = file.read_text(encoding="utf-8").splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == "[deck]"), None)
+    if start is None:
+        raise AuthorError(f"{file.name} has no [deck] section: edit it in the editor.")
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+        len(lines),
+    )
+
+    def put(key, value):
+        nonlocal end
+        for i in range(start + 1, end):
+            if re.match(rf"^\s*{key}\s*=", lines[i]):
+                if '"""' in lines[i] or "'''" in lines[i]:
+                    raise AuthorError(
+                        f"The {key} is a multi-line string: use the editor."
+                    )
+                if value is None:
+                    del lines[i]
+                    end -= 1
+                else:
+                    lines[i] = f"{key} = {_string(value)}"
+                return
+        if value is not None:
+            lines.insert(start + 1, f"{key} = {_string(value)}")
+            end += 1
+
+    put("description", " ".join(description.split()) or None)
+    put("name", name)
+    text = "\n".join(lines) + "\n"
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise AuthorError(f"{file.name} would not be valid TOML: {exc}") from exc
+    file.write_text(text, encoding="utf-8")

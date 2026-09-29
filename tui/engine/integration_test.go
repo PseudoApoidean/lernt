@@ -180,3 +180,63 @@ func TestARunAgainstTheRealEngine(t *testing.T) {
 		t.Fatalf("scoring with no run open: %v", err)
 	}
 }
+
+// TestAuthoringAgainstTheRealEngine is a deck and a card made, listed, checked
+// and deleted the way the Library does it. The fake the screens are tested with
+// cannot say what the wire will accept: an empty Go slice, say, is JSON null.
+func TestAuthoringAgainstTheRealEngine(t *testing.T) {
+	realEngine(t)
+	decks := t.TempDir()
+	t.Setenv("LERNT_DECKS", decks)
+	c, err := Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	deck, err := c.CreateDeck(NewDeckParams{Name: "Rivers"})
+	if err != nil || deck.ID != "rivers" {
+		t.Fatalf("deck %+v, err %v", deck, err)
+	}
+	card, err := c.CreateCard(NewCardParams{Deck: "rivers", Title: "What is a delta?"})
+	if err != nil {
+		t.Fatalf("a card with no follow-ups: %v", err)
+	}
+	listed, err := c.ListCards(DeckParams{Deck: "rivers"})
+	if err != nil || len(listed.Cards) != 1 || listed.Cards[0].Path != card.Path {
+		t.Fatalf("listed %+v, err %v", listed, err)
+	}
+	ten := 10
+	if _, err := c.UpdateCard(UpdateCardParams{Deck: "rivers", Card: card.ID, Title: "What is a delta?",
+		Answer: "Where a river meets the sea.", Time: &ten}); err != nil {
+		t.Fatalf("updating a card with no follow-ups: %v", err)
+	}
+	listed, err = c.ListCards(DeckParams{Deck: "rivers"})
+	if err != nil || len(listed.Cards) != 1 || listed.Cards[0].Time == nil || *listed.Cards[0].Time != 10 ||
+		!slices.Equal(listed.Cards[0].Answer, []string{"Where a river meets the sea."}) {
+		t.Fatalf("after the update %+v, err %v", listed, err)
+	}
+	if _, err := c.UpdateDeck(UpdateDeckParams{Deck: "rivers", Name: "Rivers of the world"}); err != nil {
+		t.Fatal(err)
+	}
+	if renamed, err := c.Decks(); err != nil || renamed.Decks[0].Name != "Rivers of the world" {
+		t.Fatalf("decks after the rename %+v, err %v", renamed, err)
+	}
+	if _, err := c.CreateCard(NewCardParams{Deck: "rivers", Title: "Which?", Follows: []string{"Nope"}}); Code(err) != Invalid {
+		t.Fatalf("a follow-up that is not a card: %v", err)
+	}
+	problems, err := c.CheckDeck(DeckParams{Deck: "rivers"})
+	if err != nil || len(problems.Problems) != 0 {
+		t.Fatalf("problems %+v, err %v", problems, err)
+	}
+	if _, err := c.DeleteCard(DeleteCardParams{Deck: "rivers", Card: card.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.DeleteDeck(DeleteDeckParams{Deck: "rivers"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := c.Decks()
+	if err != nil || len(after.Decks) != 0 {
+		t.Fatalf("decks after %+v, err %v", after, err)
+	}
+}

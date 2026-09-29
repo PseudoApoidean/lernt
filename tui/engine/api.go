@@ -5,7 +5,7 @@ package engine
 // either side that the other has not made fails the Go tests.
 
 // Protocol is the API version this client speaks.
-const Protocol = "lernt.api/7"
+const Protocol = "lernt.api/8"
 
 // Error codes from lernt/api.py.
 const (
@@ -47,6 +47,9 @@ type DeckInfo struct {
 	Edits string     `json:"edits"`
 	Error string     `json:"error"`
 	Stats *DeckStats `json:"stats"` // nil: the deck or its cards will not load
+	// Deleting the deck takes its cards with it: it is a folder, not a link, and
+	// holds a card directory. False: the cards are kept elsewhere and stay.
+	CardsInside bool `json:"cards_inside"`
 }
 
 type DeckList struct {
@@ -284,20 +287,61 @@ type NewCardParams struct {
 	Draft     bool     `json:"draft"`
 }
 
+type UpdateCardParams struct {
+	Deck      string   `json:"deck"`
+	Card      string   `json:"card"` // the id, which a new question does not change
+	Title     string   `json:"title"`
+	Answer    string   `json:"answer"`
+	Notes     string   `json:"notes"`
+	Reference string   `json:"reference"`
+	Time      *int     `json:"time"`
+	Follows   []string `json:"follows"`
+	Draft     bool     `json:"draft"`
+}
+
+type UpdateDeckParams struct {
+	Deck        string `json:"deck"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type NewCard struct {
 	ID   string `json:"id"`
 	Path string `json:"path"` // the file written, to open in an editor
 }
 
+// CardSummary is a card whole, as the library shows and edits it. Text is the
+// Markdown it was written in.
 type CardSummary struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Draft bool   `json:"draft"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Draft     bool     `json:"draft"`
+	Path      string   `json:"path"` // the card's file, to open in an editor
+	Answer    []string `json:"answer"`
+	Notes     []string `json:"notes"`
+	Reference string   `json:"reference"`
+	Time      *int     `json:"time"` // seconds of its own; 0: untimed; nil: the run's
+	Follows   []string `json:"follows"`
 }
 
 type CardList struct {
 	Deck  string        `json:"deck"`
 	Cards []CardSummary `json:"cards"`
+}
+
+type DeleteCardParams struct {
+	Deck string `json:"deck"`
+	Card string `json:"card"`
+}
+
+type DeleteDeckParams struct {
+	Deck string `json:"deck"`
+}
+
+// Trashed is what was deleted and where it went: moved, never erased.
+type Trashed struct {
+	ID    string `json:"id"`
+	Trash string `json:"trash"`
 }
 
 type Problems struct {
@@ -336,4 +380,8 @@ var Methods = map[string]Method{
 	"card.create":   {NewCardParams{}, NewCard{}},
 	"card.list":     {DeckParams{}, CardList{}},
 	"deck.check":    {DeckParams{}, Problems{}},
+	"card.update":   {UpdateCardParams{}, NewCard{}},
+	"deck.update":   {UpdateDeckParams{}, NewDeck{}},
+	"card.delete":   {DeleteCardParams{}, Trashed{}},
+	"deck.delete":   {DeleteDeckParams{}, Trashed{}},
 }

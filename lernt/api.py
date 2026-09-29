@@ -24,7 +24,7 @@ from . import options as options_mod
 from .session import SCORES, Session, SessionError
 from .text import clean
 
-PROTOCOL = "lernt.api/7"
+PROTOCOL = "lernt.api/8"
 
 # Error codes, beside JSON-RPC's own negative ones. A frontend branches on the
 # code and shows the message.
@@ -97,6 +97,9 @@ class DeckInfo:
     edits: str = ""
     error: str = ""
     stats: DeckStats | None = None  # None: the deck or its cards will not load
+    # Deleting the deck takes its cards with it: it is a folder here, not a link,
+    # and holds a card directory. False: the cards are kept elsewhere and stay.
+    cards_inside: bool = False
 
 
 @dataclass
@@ -362,6 +365,26 @@ class NewCardParams:
 
 
 @dataclass
+class UpdateCardParams:
+    deck: str
+    card: str  # the id, which the new question does not change
+    title: str
+    answer: str = ""
+    notes: str = ""
+    reference: str = ""
+    time: int | None = None
+    follows: list[str] = field(default_factory=list)
+    draft: bool = False
+
+
+@dataclass
+class UpdateDeckParams:
+    deck: str
+    name: str
+    description: str = ""
+
+
+@dataclass
 class NewCard:
     id: str
     path: str  # the file written, for a frontend to open in an editor
@@ -369,15 +392,43 @@ class NewCard:
 
 @dataclass
 class CardSummary:
+    """A card whole, as a library shows and edits it. Text is the Markdown it
+    was written in."""
+
     id: str
     title: str
     draft: bool
+    path: str  # the card's file, to open in an editor
+    answer: list[str]
+    notes: list[str]
+    reference: str
+    time: int | None  # seconds of its own; 0: untimed; None: the run's
+    follows: list[str]  # ids of the cards it leads to
 
 
 @dataclass
 class CardList:
     deck: str
     cards: list[CardSummary]
+
+
+@dataclass
+class DeleteCardParams:
+    deck: str
+    card: str
+
+
+@dataclass
+class DeleteDeckParams:
+    deck: str
+
+
+@dataclass
+class Trashed:
+    """What was deleted and where it went: moved, never erased."""
+
+    id: str
+    trash: str
 
 
 @dataclass
@@ -429,9 +480,17 @@ class Engine:
     def decks_list(self, params: NoParams) -> DeckList:
         listed = deck_mod.decks()
         rows = [DeckInfo(**row) for row in listed["decks"]]
+        entries = config_mod.available()
         for row in rows:
             if not row.error:
-                row.stats = deck_stats(_config(row.id), self.today())
+                config = _config(row.id)
+                row.stats = deck_stats(config, self.today())
+                entry = entries.get(row.id)
+                row.cards_inside = (
+                    entry is not None
+                    and not entry.is_symlink()
+                    and any(d.is_relative_to(entry.resolve()) for d in config.cards)
+                )
         return DeckList(home=listed["home"], decks=rows)
 
     # -- a run -------------------------------------------------------------
@@ -747,6 +806,49 @@ class Engine:
             raise ApiError(INVALID, str(exc)) from exc
         return NewCard(id=card_id, path=str(path))
 
+    @method("card.update")
+    def card_update(self, params: UpdateCardParams) -> NewCard:
+        """A card written again from its parts. The format is written afresh, so
+        what it does not hold is not kept (see `author.update_card`); a card that
+        needs more is edited in the editor."""
+        config, deck = open_deck(params.deck)
+        card = deck_mod.index(deck).get(params.card)
+        if card is None:
+            raise ApiError(
+                INVALID, f"{config.name} has no card called {params.card!r}."
+            )
+        known = {c["id"]: c["title"] for c in deck["cards"]}
+        try:
+            path = author.update_card(
+                deck_mod.card_path(card),
+                known,
+                card["id"],
+                params.title,
+                params.answer,
+                params.notes,
+                params.reference,
+                params.time,
+                params.follows,
+                params.draft,
+                card["tags"],
+            )
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return NewCard(id=card["id"], path=str(path))
+
+    @method("deck.update")
+    def deck_update(self, params: UpdateDeckParams) -> NewDeck:
+        """A deck's name and description, in its `deck.toml`. Its id is its
+        directory name, so a new name does not move its history."""
+        config = _config(params.deck)
+        if config.path is None:
+            raise ApiError(INVALID, f"{config.name} has no deck.toml to change.")
+        try:
+            author.update_deck(config.path, params.name, params.description)
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return NewDeck(id=config.id, path=str(config.path))
+
     @method("card.list")
     def card_list(self, params: DeckParams) -> CardList:
         """A deck's cards, for choosing what a new card should lead to."""
@@ -754,10 +856,55 @@ class Engine:
         return CardList(
             deck=config.id,
             cards=[
-                CardSummary(id=c["id"], title=c["title"], draft=c["draft"])
+                CardSummary(
+                    id=c["id"],
+                    title=c["title"],
+                    draft=c["draft"],
+                    path=str(deck_mod.card_path(c)),
+                    answer=list(c["answer"]),
+                    notes=list(c["notes"]),
+                    reference=c["reference"],
+                    time=c["time"],
+                    follows=list(c["followups"]),
+                )
                 for c in deck["cards"]
             ],
         )
+
+    @method("card.delete")
+    def card_delete(self, params: DeleteCardParams) -> Trashed:
+        """Move a card's file to a `.trash` in its bank. Its history stays in the
+        attempt log, where the card now reads as retired."""
+        config, deck = open_deck(params.deck)
+        card = deck_mod.index(deck).get(params.card)
+        if card is None:
+            raise ApiError(
+                INVALID, f"{config.name} has no card called {params.card!r}."
+            )
+        try:
+            moved = author.trash(deck_mod.card_path(card))
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return Trashed(id=card["id"], trash=str(moved))
+
+    @method("deck.delete")
+    def deck_delete(self, params: DeleteDeckParams) -> Trashed:
+        """Move a deck out of the decks directory into its `.trash`. Only the deck
+        itself moves - a deck that is a symlink moves the link - so cards kept
+        elsewhere, in a notes vault, are never touched. Its history stays where it
+        is, and a new deck of the same id would pick it up."""
+        config = _config(params.deck)
+        entry = config_mod.available().get(config.id)
+        if entry is None or entry.resolve() != config.path:
+            raise ApiError(
+                INVALID,
+                f"{config.name} is not in the decks directory: not lernt's to delete.",
+            )
+        try:
+            moved = author.trash(entry)
+        except (author.AuthorError, OSError) as exc:
+            raise ApiError(INVALID, str(exc)) from exc
+        return Trashed(id=config.id, trash=str(moved))
 
     @method("deck.check")
     def deck_check(self, params: DeckParams) -> Problems:

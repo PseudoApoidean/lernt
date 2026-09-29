@@ -259,6 +259,9 @@ func (c *Client) CreateDeck(p NewDeckParams) (*NewDeck, error) {
 }
 
 func (c *Client) CreateCard(p NewCardParams) (*NewCard, error) {
+	if p.Follows == nil {
+		p.Follows = []string{} // a nil slice is JSON null, and the engine wants a list
+	}
 	var r NewCard
 	return &r, c.call("card.create", p, &r)
 }
@@ -271,4 +274,27 @@ func (c *Client) ListCards(p DeckParams) (*CardList, error) {
 func (c *Client) CheckDeck(p DeckParams) (*Problems, error) {
 	var r Problems
 	return &r, c.call("deck.check", p, &r)
+}
+
+func (c *Client) DeleteCard(p DeleteCardParams) (*Trashed, error) {
+	var r Trashed
+	return &r, c.call("card.delete", p, &r)
+}
+
+func (c *Client) DeleteDeck(p DeleteDeckParams) (*Trashed, error) {
+	var r Trashed
+	return &r, c.call("deck.delete", p, &r)
+}
+
+func (c *Client) UpdateCard(p UpdateCardParams) (*NewCard, error) {
+	if p.Follows == nil {
+		p.Follows = []string{} // a nil slice is JSON null, and the engine wants a list
+	}
+	var r NewCard
+	return &r, c.call("card.update", p, &r)
+}
+
+func (c *Client) UpdateDeck(p UpdateDeckParams) (*NewDeck, error) {
+	var r NewDeck
+	return &r, c.call("deck.update", p, &r)
 }
