@@ -18,13 +18,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, "lernt:", err)
 		os.Exit(1)
 	}
+	// A line wider than the terminal draws it, because a character took more cells
+	// than we counted, would wrap and push the whole page down. With wrapping off it
+	// is cut at the edge instead, and only that line is out.
+	fmt.Fprint(os.Stdout, wrapOff)
 	_, err = tea.NewProgram(newModel(client), tea.WithAltScreen()).Run()
+	fmt.Fprint(os.Stdout, wrapOn)
 	client.Close()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "lernt:", err)
 		os.Exit(1)
 	}
 }
+
+// The terminal's automatic wrapping, off while the TUI draws and on for anything
+// else that has the terminal: an editor expects it, and so does the shell after.
+const (
+	wrapOff = "\x1b[?7l"
+	wrapOn  = "\x1b[?7h"
+)
 
 // runEditor hands the terminal to $VISUAL or $EDITOR on path, through the shell
 // so an editor with arguments ("code -w") works as it would typed.
@@ -36,6 +48,8 @@ func runEditor(path string) tea.Cmd {
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command("sh", "-c", editor+` "$1"`, "lernt", path)
+	// Wrapping is on for the editor and off again when it returns.
+	script := `printf '\033[?7h'; ` + editor + ` "$1"; status=$?; printf '\033[?7l'; exit $status`
+	cmd := exec.Command("sh", "-c", script, "lernt", path)
 	return tea.ExecProcess(cmd, func(err error) tea.Msg { return editorDone{err} })
 }

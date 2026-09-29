@@ -61,8 +61,20 @@ suppression carries a comment saying why the rule is wrong there.
 ## Tests
 
 ```sh
-make test         # uv run --with pytest pytest -q, then go test ./... in tui/
+make test           # everything, about ten seconds: builds the TUI, then pytest and go test
+make test-fast      # without the terminal tests, about a second: for the loop while writing
+make test-terminal  # only the terminal tests
 ```
+
+The terminal tests run the built TUI against the real engine in tmux (skipped where tmux
+is not installed) and in a plain pseudo-terminal read through pyte, and paste in the
+emoji that have broken a page. They are the slow ones, because they start real
+terminals, and they are in the default because widths are the one thing the fake
+terminal in the Go tests cannot check: tmux and the Unicode tables disagree about some
+emoji, and a line a cell too long wraps and moves the whole page. `make test-fast` is
+for the loop while writing; run `make test` after a change to `tui/width.go`, the
+frame, or how a page is laid out. A test that needs tmux leaves `HOME` as it is and
+removes its own socket; it never touches another tmux server.
 
 Tests build their own small card bank in a `tmp_path`, and anything touching
 decks or the logs points `XDG_DATA_HOME` (or `LERNT_DECKS`) and `XDG_STATE_HOME` there

@@ -11,7 +11,7 @@ STATE := $(or $(XDG_STATE_HOME),$(HOME)/.local/state)
 MAN   := $(DATA)/man/man1/lernt.1
 COMP  := $(DATA)/zsh/site-functions/_lernt
 
-.PHONY: all tui install uninstall test clean
+.PHONY: all tui install uninstall test test-fast test-terminal clean
 
 all: tui
 
@@ -33,9 +33,20 @@ uninstall:
 	@echo "Left in place: your decks ($(or $(LERNT_DECKS),$(DATA)/lernt/decks)) and"
 	@echo "your history ($(STATE)/lernt). To delete the history: rm -r $(STATE)/lernt"
 
-test:
-	uv run --with pytest pytest -q
+# Everything: the engine, the TUI's screens, and the TUI in a real terminal, in tmux and
+# out of it. The last starts terminals, so it is built first and takes about ten
+# seconds; test-fast is the rest, for the loop while writing.
+test: tui
+	uv run --with pytest --with pyte pytest -q
 	cd tui && go test -count=1 ./...  # uncached: the engine it runs is not a Go input
+
+test-fast:
+	uv run --with pytest pytest -q -m "not terminal"
+	cd tui && go test -count=1 ./...
+
+# Only the terminal tests.
+test-terminal: tui
+	uv run --with pytest --with pyte pytest -q -m terminal
 
 clean:
 	rm -f $(TUI)
